@@ -22,6 +22,23 @@ import json
 from typing import Any, Callable, Dict, Optional, Union
 import uuid
 
+try:
+    from publisher import (
+        DEFAULT_MQTT_TOPIC,
+        MockMQTTPublisher,
+        MQTTPublishError,
+        MQTTPublisher,
+        PublishedMessage,
+    )
+except ImportError:
+    from .publisher import (
+        DEFAULT_MQTT_TOPIC,
+        MockMQTTPublisher,
+        MQTTPublishError,
+        MQTTPublisher,
+        PublishedMessage,
+    )
+
 
 # ==============================================================================
 # Custom Exceptions
@@ -340,6 +357,8 @@ def lambda_handler(
     event: Dict[str, Any],
     context: Any = None,
     message_provider: Optional[MessageProviderType] = None,
+    publisher: Optional[MQTTPublisher] = None,
+    mqtt_topic: str = DEFAULT_MQTT_TOPIC,
 ) -> Dict[str, Any]:
     """
     AWS Lambda entry point function.
@@ -350,15 +369,31 @@ def lambda_handler(
         message_provider: Optional CommitMessageProvider instance or callable.
                           If None in a real environment, production integration
                           will instantiate a Boto3 CodeCommit provider.
+        publisher: Optional MQTTPublisher instance for delivering the payload.
+                   If None, payload is constructed and returned without publishing.
+        mqtt_topic: Target MQTT topic string (defaults to 'gitops/commits').
 
     Returns:
         Structured response dictionary containing status code and payload or error info:
-        - 200: {"statusCode": 200, "status": "success", "payload": {...}}
+        - 200: {"statusCode": 200, "status": "success", "payload": {...}} (if publisher is None)
+        - 200: {"statusCode": 200, "status": "success", "payload": {...}, "published": True, "topic": "..."} (if publisher is provided)
         - 400: {"statusCode": 400, "status": "error", "errorType": "...", "message": "..."}
         - 500: {"statusCode": 500, "status": "error", "errorType": "...", "message": "..."}
     """
     try:
         payload = build_notification_payload(event, message_provider=message_provider)
+
+        # If an MQTT publisher is injected, publish payload to the topic
+        if publisher is not None:
+            publisher.publish(topic=mqtt_topic, payload=payload)
+            return {
+                "statusCode": 200,
+                "status": "success",
+                "payload": payload,
+                "published": True,
+                "topic": mqtt_topic,
+            }
+
         return {
             "statusCode": 200,
             "status": "success",
@@ -369,6 +404,13 @@ def lambda_handler(
             "statusCode": 400,
             "status": "error",
             "errorType": err.__class__.__name__,
+            "message": str(err),
+        }
+    except MQTTPublishError as err:
+        return {
+            "statusCode": 500,
+            "status": "error",
+            "errorType": "MQTTPublishError",
             "message": str(err),
         }
     except Exception as err:
