@@ -22,6 +22,7 @@ from lambda_function import (
     DEFAULT_MQTT_TOPIC,
     MockMQTTPublisher,
     MQTTPublishError,
+    MQTTPublisher,
     PublishedMessage,
     StaticCommitMessageProvider,
     lambda_handler,
@@ -140,6 +141,15 @@ class TestMockMQTTPublisher(unittest.TestCase):
 
         self.assertIn("Broker connection lost", str(ctx.exception))
         self.assertEqual(len(failing_publisher.published_messages), 0)
+
+    def test_mock_publisher_return_value_false_records_nothing(self):
+        """Verify that MockMQTTPublisher(return_value=False) returns False without error and records no message."""
+        rejecting_publisher = MockMQTTPublisher(return_value=False)
+        result = rejecting_publisher.publish("gitops/commits", {"msg": "test"})
+
+        self.assertFalse(result)
+        self.assertEqual(len(rejecting_publisher.published_messages), 0)
+        self.assertIsNone(rejecting_publisher.last_message())
 
 
 # ==============================================================================
@@ -276,6 +286,80 @@ class TestHandlerPublisherIntegration(unittest.TestCase):
         self.assertEqual(response["errorType"], "MQTTPublishError")
         self.assertIn("wildcard", response["message"].lower())
         self.assertEqual(len(self.publisher.published_messages), 0)
+
+    def test_publisher_returning_false_aborts_success_report(self):
+        """Regression test: verify that a publisher returning False is never reported as successful."""
+        event = load_fixture("event_valid_commit.json")
+        rejecting_publisher = MockMQTTPublisher(return_value=False)
+
+        response = lambda_handler(
+            event,
+            message_provider=self.provider,
+            publisher=rejecting_publisher,
+        )
+
+        # Must return error, never success
+        self.assertEqual(response["statusCode"], 500)
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["errorType"], "MQTTPublishError")
+        self.assertIn("returned False", response["message"])
+        self.assertFalse(response.get("published", False))
+        self.assertEqual(len(rejecting_publisher.published_messages), 0)
+
+    def test_custom_publisher_stub_returning_false(self):
+        """Regression test: verify an external publisher stub returning False fails safely."""
+        event = load_fixture("event_valid_commit.json")
+
+        class StubRejectingPublisher(MQTTPublisher):
+            def publish(self, topic: str, payload: dict) -> bool:
+                return False
+
+        response = lambda_handler(
+            event,
+            message_provider=self.provider,
+            publisher=StubRejectingPublisher(),
+        )
+
+        self.assertEqual(response["statusCode"], 500)
+        self.assertEqual(response["status"], "error")
+        self.assertEqual(response["errorType"], "MQTTPublishError")
+        self.assertFalse(response.get("published", False))
+
+    def test_publisher_returning_non_boolean_truthy_is_rejected(self):
+        """Verify that returning non-boolean truthy values (e.g. 1 or 'OK') is rejected as invalid."""
+        event = load_fixture("event_valid_commit.json")
+
+        class NonBoolPublisher(MQTTPublisher):
+            def publish(self, topic: str, payload: dict) -> bool:
+                return 1  # Truthy integer, but not boolean True
+
+        response = lambda_handler(
+            event,
+            message_provider=self.provider,
+            publisher=NonBoolPublisher(),
+        )
+
+        self.assertEqual(response["statusCode"], 500)
+        self.assertEqual(response["errorType"], "MQTTPublishError")
+        self.assertFalse(response.get("published", False))
+
+    def test_validation_failure_prevents_publishing_even_with_failing_publisher(self):
+        """Verify that malformed events abort with 400 before the publisher is ever invoked."""
+        event = load_fixture("event_missing_required_fields.json")
+        failing_publisher = MockMQTTPublisher(
+            should_fail=True, fail_message="Should never be reached"
+        )
+
+        response = lambda_handler(
+            event,
+            message_provider=self.provider,
+            publisher=failing_publisher,
+        )
+
+        # Must be EventValidationError (400), not MQTTPublishError (500)
+        self.assertEqual(response["statusCode"], 400)
+        self.assertEqual(response["errorType"], "EventValidationError")
+        self.assertEqual(len(failing_publisher.published_messages), 0)
 
 
 if __name__ == "__main__":

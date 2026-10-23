@@ -1,0 +1,25 @@
+{
+  "_comment": "EventBridge Rule Pattern for CodeCommit repository branch state changes. Replace placeholders (<REGION>, <ACCOUNT_ID>, <REPOSITORY_NAME>) before deployment.",
+  "source": [
+    "aws.codecommit"
+  ],
+  "detail-type": [
+    "CodeCommit Repository State Change"
+  ],
+  "resources": [
+    "arn:aws:codecommit:<REGION>:<ACCOUNT_ID>:<REPOSITORY_NAME>"
+  ],
+  "detail": {
+    "event": [
+      "referenceCreated",
+      "referenceUpdated"
+    ],
+    "referenceType": [
+      "branch"
+    ],
+    "referenceName": [
+      "main"
+    ]
+  }
+}
+

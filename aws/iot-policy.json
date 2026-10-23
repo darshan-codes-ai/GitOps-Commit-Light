@@ -1,0 +1,31 @@
+{
+  "_comment": "AWS IoT Core Certificate Policy for ESP32 Subscriber. Replace placeholders (<REGION>, <ACCOUNT_ID>) before deployment.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ESP32DeviceConnect",
+      "Effect": "Allow",
+      "Action": [
+        "iot:Connect"
+      ],
+      "Resource": "arn:aws:iot:<REGION>:<ACCOUNT_ID>:client/${iot:Connection.Thing.ThingName}"
+    },
+    {
+      "Sid": "ESP32SubscribeCommitTopic",
+      "Effect": "Allow",
+      "Action": [
+        "iot:Subscribe"
+      ],
+      "Resource": "arn:aws:iot:<REGION>:<ACCOUNT_ID>:topicfilter/gitops/commits"
+    },
+    {
+      "Sid": "ESP32ReceiveCommitMessages",
+      "Effect": "Allow",
+      "Action": [
+        "iot:Receive"
+      ],
+      "Resource": "arn:aws:iot:<REGION>:<ACCOUNT_ID>:topic/gitops/commits"
+    }
+  ]
+}
+

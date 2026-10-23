@@ -1,0 +1,17 @@
+{
+  "_comment": "EventBridge Rule Target Configuration (used with 'aws events put-targets'). Replace placeholders (<REGION>, <ACCOUNT_ID>, <FUNCTION_NAME>, <DLQ_NAME>) before deployment.",
+  "Targets": [
+    {
+      "Id": "GitOpsCommitLightLambdaTarget",
+      "Arn": "arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<FUNCTION_NAME>",
+      "RetryPolicy": {
+        "MaximumEventAgeInSeconds": 86400,
+        "MaximumRetryAttempts": 185
+      },
+      "DeadLetterConfig": {
+        "Arn": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<DLQ_NAME>"
+      }
+    }
+  ]
+}
+

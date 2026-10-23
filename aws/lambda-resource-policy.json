@@ -1,0 +1,21 @@
+{
+  "_comment": "Lambda Resource-Based Policy Statement granting EventBridge permission to invoke the function. Replace placeholders (<REGION>, <ACCOUNT_ID>, <RULE_NAME>, <FUNCTION_NAME>) before deployment.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEventBridgeToInvokeGitOpsLambda",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "events.amazonaws.com"
+      },
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<FUNCTION_NAME>",
+      "Condition": {
+        "ArnLike": {
+          "AWS:SourceArn": "arn:aws:events:<REGION>:<ACCOUNT_ID>:rule/<RULE_NAME>"
+        }
+      }
+    }
+  ]
+}
+

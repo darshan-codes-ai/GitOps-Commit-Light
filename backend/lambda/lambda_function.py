@@ -28,7 +28,9 @@ try:
         MockMQTTPublisher,
         MQTTPublishError,
         MQTTPublisher,
+        PermanentMQTTPublishError,
         PublishedMessage,
+        TransientMQTTPublishError,
     )
 except ImportError:
     from .publisher import (
@@ -36,12 +38,14 @@ except ImportError:
         MockMQTTPublisher,
         MQTTPublishError,
         MQTTPublisher,
+        PermanentMQTTPublishError,
         PublishedMessage,
+        TransientMQTTPublishError,
     )
 
 
 # ==============================================================================
-# Custom Exceptions
+# Custom Exceptions & Error Classification Strategy
 # ==============================================================================
 
 class EventProcessingError(Exception):
@@ -49,19 +53,67 @@ class EventProcessingError(Exception):
     pass
 
 
-class EventValidationError(EventProcessingError):
+class PermanentError(EventProcessingError):
+    """
+    Base marker for non-retryable errors (poison pills).
+    
+    In asynchronous EventBridge invocations, permanent errors are acknowledged
+    cleanly with statusCode 400 (no exception raised) to avoid useless, costly retries.
+    """
+    pass
+
+
+class RetryableError(EventProcessingError):
+    """
+    Base marker for transient, retryable errors (service timeouts, rate limits).
+    
+    In production asynchronous invocations, retryable errors are raised out of
+    the Lambda entry point so AWS Lambda marks the invocation as failed and triggers
+    EventBridge retries and eventual Dead-Letter Queue (DLQ) routing.
+    """
+    pass
+
+
+class EventValidationError(PermanentError):
     """Raised when an EventBridge event is malformed or missing required fields."""
     pass
 
 
-class UnsupportedEventError(EventProcessingError):
+class UnsupportedEventError(PermanentError):
     """Raised when the event is valid JSON but from an unsupported source or type."""
     pass
 
 
 class CommitMessageError(EventProcessingError):
-    """Raised when the commit message cannot be retrieved or provided."""
+    """Base exception for commit message retrieval errors."""
     pass
+
+
+class PermanentCommitMessageError(CommitMessageError, PermanentError):
+    """Raised when commit message is permanently unavailable (e.g. missing from event and no provider)."""
+    pass
+
+
+class TransientCommitRetrievalError(CommitMessageError, RetryableError):
+    """Raised when commit message retrieval fails due to transient infrastructure issues."""
+    pass
+
+
+def is_retryable_error(error: Exception) -> bool:
+    """
+    Determine whether an error represents a transient failure that should be retried
+    by Amazon EventBridge in an asynchronous invocation.
+    """
+    if isinstance(error, (PermanentError, PermanentMQTTPublishError)):
+        return False
+    if isinstance(error, (RetryableError, TransientMQTTPublishError)):
+        return True
+    if isinstance(error, (ConnectionError, TimeoutError, OSError)):
+        return True
+    if isinstance(error, MQTTPublishError):
+        return True
+    # Unexpected runtime exceptions are treated as retryable to prevent silent data loss
+    return not isinstance(error, (EventValidationError, UnsupportedEventError, PermanentCommitMessageError))
 
 
 # ==============================================================================
@@ -313,15 +365,19 @@ def build_notification_payload(
             elif callable(message_provider):
                 commit_message = message_provider(parsed.repository, parsed.commit_id)
             else:
-                raise CommitMessageError(
+                raise PermanentCommitMessageError(
                     f"Invalid message_provider type: {type(message_provider).__name__}. "
                     "Expected CommitMessageProvider or callable(repository, commit_id)."
                 )
         except CommitMessageError:
             raise
+        except (ConnectionError, TimeoutError, OSError) as err:
+            raise TransientCommitRetrievalError(
+                f"Transient network error retrieving commit message from provider: {err}"
+            ) from err
         except Exception as err:
-            raise CommitMessageError(
-                f"Error retrieving commit message from provider: {err}"
+            raise TransientCommitRetrievalError(
+                f"Transient error retrieving commit message from provider: {err}"
             ) from err
     else:
         # Check for synthetic test fixture message inside detail
@@ -330,13 +386,13 @@ def build_notification_payload(
         if isinstance(fixture_msg, str) and fixture_msg.strip():
             commit_message = fixture_msg.strip()
         else:
-            raise CommitMessageError(
+            raise PermanentCommitMessageError(
                 "Commit message could not be obtained. In offline mode, provide a "
                 "CommitMessageProvider, a callable provider, or include 'commitMessage' in the synthetic test event."
             )
 
     if not isinstance(commit_message, str) or not commit_message.strip():
-        raise CommitMessageError("Retrieved commit message is empty or invalid.")
+        raise PermanentCommitMessageError("Retrieved commit message is empty or invalid.")
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -359,9 +415,10 @@ def lambda_handler(
     message_provider: Optional[MessageProviderType] = None,
     publisher: Optional[MQTTPublisher] = None,
     mqtt_topic: str = DEFAULT_MQTT_TOPIC,
+    raise_on_retryable: bool = False,
 ) -> Dict[str, Any]:
     """
-    AWS Lambda entry point function.
+    AWS Lambda core event processor.
 
     Args:
         event: The incoming EventBridge event dictionary.
@@ -372,20 +429,29 @@ def lambda_handler(
         publisher: Optional MQTTPublisher instance for delivering the payload.
                    If None, payload is constructed and returned without publishing.
         mqtt_topic: Target MQTT topic string (defaults to 'gitops/commits').
+        raise_on_retryable: If True, transient retryable failures are raised as
+                            unhandled exceptions so AWS Lambda marks the invocation
+                            as failed to trigger EventBridge retries and DLQ routing.
+                            If False (default), returns structured dicts with statusCode
+                            for offline test convenience.
 
     Returns:
         Structured response dictionary containing status code and payload or error info:
         - 200: {"statusCode": 200, "status": "success", "payload": {...}} (if publisher is None)
         - 200: {"statusCode": 200, "status": "success", "payload": {...}, "published": True, "topic": "..."} (if publisher is provided)
-        - 400: {"statusCode": 400, "status": "error", "errorType": "...", "message": "..."}
-        - 500: {"statusCode": 500, "status": "error", "errorType": "...", "message": "..."}
+        - 400: {"statusCode": 400, "status": "error", "errorType": "...", "message": "...", "retryable": False}
+        - 500: {"statusCode": 500, "status": "error", "errorType": "...", "message": "...", "retryable": True}
     """
     try:
         payload = build_notification_payload(event, message_provider=message_provider)
 
         # If an MQTT publisher is injected, publish payload to the topic
         if publisher is not None:
-            publisher.publish(topic=mqtt_topic, payload=payload)
+            publish_success = publisher.publish(topic=mqtt_topic, payload=payload)
+            if publish_success is not True:
+                raise TransientMQTTPublishError(
+                    f"MQTT publisher rejected delivery to topic '{mqtt_topic}' (returned False)."
+                )
             return {
                 "statusCode": 200,
                 "status": "success",
@@ -399,25 +465,75 @@ def lambda_handler(
             "status": "success",
             "payload": payload,
         }
-    except (EventValidationError, UnsupportedEventError, CommitMessageError) as err:
+    except (EventValidationError, UnsupportedEventError) as err:
         return {
             "statusCode": 400,
             "status": "error",
             "errorType": err.__class__.__name__,
             "message": str(err),
+            "retryable": False,
+        }
+    except CommitMessageError as err:
+        is_retryable = is_retryable_error(err)
+        if is_retryable and raise_on_retryable:
+            raise
+        return {
+            "statusCode": 500 if is_retryable else 400,
+            "status": "error",
+            "errorType": "CommitMessageError",
+            "message": str(err),
+            "retryable": is_retryable,
         }
     except MQTTPublishError as err:
+        is_retryable = is_retryable_error(err)
+        if is_retryable and raise_on_retryable:
+            raise
         return {
             "statusCode": 500,
             "status": "error",
             "errorType": "MQTTPublishError",
             "message": str(err),
+            "retryable": is_retryable,
         }
     except Exception as err:
+        if raise_on_retryable:
+            raise
         return {
             "statusCode": 500,
             "status": "error",
             "errorType": "InternalError",
             "message": f"Unexpected error during event processing: {err}",
+            "retryable": True,
         }
+
+
+def production_lambda_handler(
+    event: Dict[str, Any],
+    context: Any = None,
+    message_provider: Optional[MessageProviderType] = None,
+    publisher: Optional[MQTTPublisher] = None,
+    mqtt_topic: str = DEFAULT_MQTT_TOPIC,
+) -> Dict[str, Any]:
+    """
+    Production entry point for asynchronous EventBridge Lambda invocations.
+
+    Asynchronous Failure Handling Strategy:
+    - Permanent validation errors (EventValidationError, UnsupportedEventError,
+      PermanentCommitMessageError) are caught and acknowledged with statusCode 400
+      (retryable=False). The invocation exits cleanly with code 0 so EventBridge
+      does NOT fruitlessly retry permanent poison-pill events.
+    - Transient infrastructure errors (TransientCommitRetrievalError,
+      TransientMQTTPublishError, unexpected exceptions) are raised as unhandled
+      exceptions. AWS Lambda marks the invocation as failed, triggering EventBridge
+      retry policies (exponential backoff) and eventual Dead-Letter Queue (DLQ) routing.
+    - Successful events return statusCode 200 with payload and published=True.
+    """
+    return lambda_handler(
+        event=event,
+        context=context,
+        message_provider=message_provider,
+        publisher=publisher,
+        mqtt_topic=mqtt_topic,
+        raise_on_retryable=True,
+    )
 

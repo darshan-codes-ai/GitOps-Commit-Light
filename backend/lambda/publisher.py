@@ -26,7 +26,17 @@ DEFAULT_MQTT_TOPIC = "gitops/commits"
 
 
 class MQTTPublishError(Exception):
-    """Raised when an MQTT message cannot be validated or published."""
+    """Base exception for all MQTT publishing errors."""
+    pass
+
+
+class PermanentMQTTPublishError(MQTTPublishError):
+    """Raised when an MQTT topic or payload is fundamentally invalid (non-retryable)."""
+    pass
+
+
+class TransientMQTTPublishError(MQTTPublishError):
+    """Raised when publication fails due to transient broker or network issues (retryable)."""
     pass
 
 
@@ -87,9 +97,11 @@ class MockMQTTPublisher(MQTTPublisher):
         self,
         should_fail: bool = False,
         fail_message: str = "Simulated MQTT publication failure.",
+        return_value: bool = True,
     ):
         self.should_fail = should_fail
         self.fail_message = fail_message
+        self.return_value = return_value
         self._published_messages: List[PublishedMessage] = []
 
     @property
@@ -113,19 +125,19 @@ class MockMQTTPublisher(MQTTPublisher):
         """
         # 1. Validate topic
         if not isinstance(topic, str) or not topic.strip():
-            raise MQTTPublishError("MQTT topic must be a non-empty string.")
+            raise PermanentMQTTPublishError("MQTT topic must be a non-empty string.")
 
         clean_topic = topic.strip()
 
         # Concrete publication topics must not contain MQTT subscription wildcards
         if "+" in clean_topic or "#" in clean_topic:
-            raise MQTTPublishError(
+            raise PermanentMQTTPublishError(
                 f"Cannot publish to wildcard topic '{clean_topic}'. Wildcards ('+' and '#') are for subscriptions only."
             )
 
         # 2. Validate payload structure and serializability
         if not isinstance(payload, dict):
-            raise MQTTPublishError(
+            raise PermanentMQTTPublishError(
                 f"Payload must be a dictionary, received: {type(payload).__name__}."
             )
 
@@ -133,15 +145,19 @@ class MockMQTTPublisher(MQTTPublisher):
             # Confirm that payload can be serialized to JSON
             json.dumps(payload)
         except (TypeError, OverflowError) as err:
-            raise MQTTPublishError(
+            raise PermanentMQTTPublishError(
                 f"Payload is not JSON-serializable: {err}"
             ) from err
 
         # 3. Simulate failure if configured
         if self.should_fail:
-            raise MQTTPublishError(self.fail_message)
+            raise TransientMQTTPublishError(self.fail_message)
 
-        # 4. Record published message in memory
+        # 4. If return_value is False, simulate publisher rejection without raising an exception
+        if not self.return_value:
+            return False
+
+        # 5. Record published message in memory
         self._published_messages.append(
             PublishedMessage(topic=clean_topic, payload=payload)
         )
