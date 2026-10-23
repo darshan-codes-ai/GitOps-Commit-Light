@@ -1,0 +1,18 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Malformed CodeCommit event missing repositoryName and commitId inside detail. Placeholder values only.",
+  "version": "0",
+  "id": "synthetic-event-id-missing-001",
+  "detail-type": "CodeCommit Repository State Change",
+  "source": "aws.codecommit",
+  "account": "111122223333",
+  "time": "2026-10-23T11:20:00Z",
+  "region": "us-east-1",
+  "resources": [
+    "arn:aws:codecommit:us-east-1:111122223333:gitops-commit-light"
+  ],
+  "detail": {
+    "event": "referenceUpdated",
+    "referenceType": "branch",
+    "referenceName": "main"
+  }
+}

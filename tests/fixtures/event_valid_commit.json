@@ -1,0 +1,24 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Valid CodeCommit referenceUpdated EventBridge event for offline testing. Placeholder values only.",
+  "version": "0",
+  "id": "synthetic-event-id-001",
+  "detail-type": "CodeCommit Repository State Change",
+  "source": "aws.codecommit",
+  "account": "111122223333",
+  "time": "2026-10-23T11:00:00Z",
+  "region": "us-east-1",
+  "resources": [
+    "arn:aws:codecommit:us-east-1:111122223333:gitops-commit-light"
+  ],
+  "detail": {
+    "event": "referenceUpdated",
+    "repositoryName": "gitops-commit-light",
+    "repositoryId": "synthetic-repo-uuid-001",
+    "referenceType": "branch",
+    "referenceName": "main",
+    "referenceFullName": "refs/heads/main",
+    "commitId": "0123456789abcdef0123456789abcdef01234567",
+    "oldCommitId": "fedcba9876543210fedcba9876543210fedcba98",
+    "callerUserArn": "arn:aws:iam::111122223333:user/synthetic-developer"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Event from an unsupported source (non-CodeCommit). Placeholder values only.",
+  "version": "0",
+  "id": "synthetic-event-id-unsupported-002",
+  "detail-type": "EC2 Instance State-change Notification",
+  "source": "aws.ec2",
+  "account": "111122223333",
+  "time": "2026-10-23T11:45:00Z",
+  "region": "us-east-1",
+  "resources": [],
+  "detail": {
+    "state": "running"
+  }
+}

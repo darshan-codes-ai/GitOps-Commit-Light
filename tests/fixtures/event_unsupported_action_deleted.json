@@ -1,0 +1,21 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Unsupported CodeCommit event action (referenceDeleted / branch deletion). Placeholder values only.",
+  "version": "0",
+  "id": "synthetic-event-id-unsupported-001",
+  "detail-type": "CodeCommit Repository State Change",
+  "source": "aws.codecommit",
+  "account": "111122223333",
+  "time": "2026-10-23T11:30:00Z",
+  "region": "us-east-1",
+  "resources": [
+    "arn:aws:codecommit:us-east-1:111122223333:gitops-commit-light"
+  ],
+  "detail": {
+    "event": "referenceDeleted",
+    "repositoryName": "gitops-commit-light",
+    "repositoryId": "synthetic-repo-uuid-001",
+    "referenceType": "branch",
+    "referenceName": "feature-branch",
+    "oldCommitId": "abcdef0123456789abcdef0123456789abcdef01"
+  }
+}
