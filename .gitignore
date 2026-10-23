@@ -1,0 +1,104 @@
+# GitOps Commit Light - .gitignore
+
+# --------------------------------------------------
+# Secrets, Environment Variables & Configuration
+# --------------------------------------------------
+.env
+.env.*
+*.env
+*.secrets
+secrets.json
+config.h
+private_config.h
+wifi_credentials.h
+
+# --------------------------------------------------
+# AWS Credentials & Local Config
+# --------------------------------------------------
+.aws/
+*aws_credentials*
+credentials.csv
+aws-config.json
+
+# --------------------------------------------------
+# Certificates, Keys & TLS Artifacts (AWS IoT Core)
+# --------------------------------------------------
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.pfx
+*.p12
+root-CA.crt
+certificate.pem.crt
+private.pem.key
+public.pem.key
+
+# --------------------------------------------------
+# Python / AWS Lambda Build Artifacts & Virtualenvs
+# --------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --------------------------------------------------
+# Firmware Build Artifacts (Arduino / ESP-IDF / PlatformIO)
+# --------------------------------------------------
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+*.hex
+*.bin
+*.elf
+*.map
+.arduino/
+arduino_build/
+arduino_cache/
+
+# --------------------------------------------------
+# Operating System & Editor Temporary Files
+# --------------------------------------------------
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Editors & IDEs
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+*~
+
