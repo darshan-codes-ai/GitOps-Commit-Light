@@ -3,28 +3,35 @@
 Validates:
 1. JSON syntax correctness across all configuration files in aws/.
 2. Absence of hardcoded AWS 12-digit account IDs, real regions, or secret keys.
-3. Decoupled Retry & DLQ Architecture (Path A vs Path B):
+3. IAM Role Trust Policy (aws/trust-policy.json):
+   - Restricted strictly to lambda.amazonaws.com principal and sts:AssumeRole.
+4. EventBridge Target DLQ SQS Resource Policy (aws/eventbridge-dlq-policy.json):
+   - Restricted strictly to events.amazonaws.com principal and sqs:SendMessage.
+   - Condition scoped to aws:SourceArn (rule ARN) and aws:SourceAccount (account ID).
+5. Decoupled Retry & DLQ Architecture (Path A vs Path B):
    - Path A (Target Delivery): EventBridge Target RetryPolicy (0-185 attempts, max 86400s)
      and EventBridge DeadLetterConfig.
    - Path B (Function Execution): Lambda Asynchronous Event Invoke Config (0-2 attempts,
      max 21600s) and On-Failure Destination DLQ.
    - Distinct retry counters and compliance with current AWS service limits.
-4. Production Handler Entry Point:
+6. Production Handler Entry Point:
    - Verifies lambda-function-config.json specifies 'lambda_function.production_lambda_handler'.
-5. Least-privilege IAM policy invariants:
-   - Lambda execution role:
+7. Least-privilege IAM policy invariants:
+   - Lambda execution role (aws/lambda-policy.json):
+     * logs:CreateLogGroup scoped to log-group.
+     * logs:CreateLogStream and logs:PutLogEvents restricted to function log-group streams.
+     * No logs:* wildcard.
      * iot:Publish restricted strictly to 'gitops/commits' topic (no wildcards).
      * codecommit:GetCommit read-only on repository ARN.
-     * logs:CreateLogStream and logs:PutLogEvents restricted to function log-group.
      * sqs:SendMessage restricted to Lambda On-Failure DLQ ARN.
-   - ESP32 IoT certificate policy:
+   - ESP32 IoT certificate policy (aws/iot-policy.json):
      * Actions restricted to iot:Connect, iot:Subscribe, and iot:Receive.
      * iot:Publish is strictly absent (subscriber-only device).
      * iot:Subscribe uses 'topicfilter/gitops/commits'.
      * iot:Receive uses 'topic/gitops/commits'.
-   - EventBridge Rule:
+   - EventBridge Rule (aws/eventbridge-rule.json):
      * Scoped to aws.codecommit source and main branch.
-   - Lambda Resource Policy:
+   - Lambda Resource Policy (aws/lambda-resource-policy.json):
      * Scoped to events.amazonaws.com principal and rule ARN condition.
 """
 
@@ -42,6 +49,8 @@ class TestAwsConfigurationJson(unittest.TestCase):
     EXPECTED_FILES = [
         "eventbridge-rule.json",
         "eventbridge-target.json",
+        "eventbridge-dlq-policy.json",
+        "trust-policy.json",
         "lambda-function-config.json",
         "lambda-event-invoke-config.json",
         "lambda-policy.json",
@@ -61,7 +70,7 @@ class TestAwsConfigurationJson(unittest.TestCase):
     def test_all_json_files_parse_validly(self):
         """Verify that every JSON file in aws/ contains valid JSON syntax."""
         json_files = list(AWS_DIR.glob("*.json"))
-        self.assertGreaterEqual(len(json_files), 7)
+        self.assertGreaterEqual(len(json_files), 9)
         for json_file in json_files:
             with open(json_file, "r", encoding="utf-8") as f:
                 try:
@@ -99,11 +108,95 @@ class TestAwsConfigurationJson(unittest.TestCase):
                     f"Credential indicator '{indicator}' detected in {json_file.name}",
                 )
 
-            self.assertIn(
-                "<ACCOUNT_ID>",
-                content,
-                f"Expected placeholder <ACCOUNT_ID> in {json_file.name}",
-            )
+            # Templates containing ARNs or account IDs must use <ACCOUNT_ID> placeholder
+            if "arn:aws:" in content or "SourceAccount" in content:
+                self.assertIn(
+                    "<ACCOUNT_ID>",
+                    content,
+                    f"Expected placeholder <ACCOUNT_ID> in {json_file.name}",
+                )
+
+
+class TestTrustPolicy(unittest.TestCase):
+    """Test IAM Role Trust Policy for Lambda execution role."""
+
+    def setUp(self):
+        with open(AWS_DIR / "trust-policy.json", "r", encoding="utf-8") as f:
+            self.policy = json.load(f)
+        self.statements = self.policy.get("Statement", [])
+
+    def test_trust_policy_structure(self):
+        """Verify trust policy permits only lambda.amazonaws.com to sts:AssumeRole."""
+        self.assertEqual(self.policy.get("Version"), "2012-10-17")
+        self.assertEqual(len(self.statements), 1)
+
+        stmt = self.statements[0]
+        self.assertEqual(stmt.get("Effect"), "Allow")
+        self.assertEqual(
+            stmt.get("Principal"),
+            {"Service": "lambda.amazonaws.com"},
+            "Trust policy must authorize only lambda.amazonaws.com service principal",
+        )
+        self.assertEqual(stmt.get("Action"), "sts:AssumeRole")
+
+
+class TestEventBridgeTargetDlqPolicy(unittest.TestCase):
+    """Test SQS Queue Resource Policy for EventBridge Target DLQ."""
+
+    def setUp(self):
+        with open(AWS_DIR / "eventbridge-dlq-policy.json", "r", encoding="utf-8") as f:
+            self.policy = json.load(f)
+        self.statements = self.policy.get("Statement", [])
+
+    def test_eb_dlq_policy_structure(self):
+        """Verify EventBridge DLQ policy authorizes events.amazonaws.com for sqs:SendMessage."""
+        self.assertEqual(self.policy.get("Version"), "2012-10-17")
+        self.assertEqual(len(self.statements), 1)
+
+        stmt = self.statements[0]
+        self.assertEqual(stmt.get("Effect"), "Allow")
+        self.assertEqual(
+            stmt.get("Principal"),
+            {"Service": "events.amazonaws.com"},
+            "EventBridge DLQ policy must authorize only events.amazonaws.com",
+        )
+        self.assertEqual(stmt.get("Action"), "sqs:SendMessage")
+        self.assertEqual(
+            stmt.get("Resource"),
+            "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<EVENTBRIDGE_DLQ_NAME>",
+        )
+
+        condition = stmt.get("Condition", {})
+        # Verify aws:SourceArn and aws:SourceAccount conditions
+        arn_cond = condition.get("ArnEquals", {}).get("aws:SourceArn")
+        self.assertEqual(
+            arn_cond,
+            "arn:aws:events:<REGION>:<ACCOUNT_ID>:rule/<RULE_NAME>",
+            "EventBridge DLQ policy must be restricted to the rule ARN",
+        )
+        acct_cond = condition.get("StringEquals", {}).get("aws:SourceAccount")
+        self.assertEqual(
+            acct_cond,
+            "<ACCOUNT_ID>",
+            "EventBridge DLQ policy must be restricted to the source account ID",
+        )
+
+    def test_separation_between_eb_dlq_and_lambda_dlq(self):
+        """Verify EventBridge DLQ and Lambda DLQ use distinct queue names and mechanisms."""
+        with open(AWS_DIR / "eventbridge-dlq-policy.json", "r", encoding="utf-8") as f:
+            eb_dlq = json.load(f)
+        with open(AWS_DIR / "lambda-policy.json", "r", encoding="utf-8") as f:
+            lambda_policy = json.load(f)
+
+        eb_res = eb_dlq["Statement"][0]["Resource"]
+        lambda_sqs_stmt = next(
+            s for s in lambda_policy["Statement"] if "sqs:SendMessage" in s.get("Action", [])
+        )
+        lambda_res = lambda_sqs_stmt["Resource"]
+
+        self.assertIn("<EVENTBRIDGE_DLQ_NAME>", eb_res)
+        self.assertIn("<LAMBDA_DLQ_NAME>", lambda_res)
+        self.assertNotEqual(eb_res, lambda_res, "EventBridge DLQ and Lambda DLQ must use separate queues")
 
 
 class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
@@ -117,7 +210,7 @@ class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
     def test_statement_structure(self):
         """Verify policy version and statements."""
         self.assertEqual(self.policy.get("Version"), "2012-10-17")
-        self.assertGreaterEqual(len(self.statements), 4)
+        self.assertGreaterEqual(len(self.statements), 5)
 
     def test_iot_publish_strictly_scoped(self):
         """Verify iot:Publish is scoped strictly to topic/gitops/commits without wildcards."""
@@ -175,27 +268,48 @@ class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
         )
 
     def test_cloudwatch_logging_least_privilege(self):
-        """Verify CloudWatch permissions are restricted to log stream creation and event putting."""
-        cw_stmt = next(
+        """Verify CloudWatch permissions include log group creation and stream delivery without logs:*."""
+        log_group_stmt = next(
             (
                 s
                 for s in self.statements
-                if any(act.startswith("logs:") for act in s.get("Action", []))
+                if "logs:CreateLogGroup" in s.get("Action", [])
             ),
             None,
         )
         self.assertIsNotNone(
-            cw_stmt, "Missing CloudWatch Logs statement in Lambda policy"
+            log_group_stmt, "Missing logs:CreateLogGroup statement in Lambda policy"
         )
-        actions = cw_stmt.get("Action", [])
+        self.assertEqual(
+            log_group_stmt.get("Resource"),
+            "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>",
+        )
+
+        stream_stmt = next(
+            (
+                s
+                for s in self.statements
+                if "logs:CreateLogStream" in s.get("Action", [])
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            stream_stmt, "Missing logs:CreateLogStream statement in Lambda policy"
+        )
+        actions = stream_stmt.get("Action", [])
         self.assertIn("logs:CreateLogStream", actions)
         self.assertIn("logs:PutLogEvents", actions)
-        self.assertNotIn("logs:*", actions)
-        self.assertTrue(
-            cw_stmt.get("Resource", "").startswith(
-                "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>"
-            )
+        self.assertEqual(
+            stream_stmt.get("Resource"),
+            "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>:*",
         )
+
+        # Ensure no statement contains the dangerous administrative logs:* wildcard
+        for stmt in self.statements:
+            stmt_actions = stmt.get("Action", [])
+            if isinstance(stmt_actions, str):
+                stmt_actions = [stmt_actions]
+            self.assertNotIn("logs:*", stmt_actions, "Security violation: logs:* wildcard detected")
 
     def test_lambda_dlq_send_message_permission(self):
         """Verify Lambda execution role has sqs:SendMessage for the On-Failure DLQ."""

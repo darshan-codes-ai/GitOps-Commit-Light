@@ -1,0 +1,15 @@
+{
+  "_comment": "IAM Role Trust Policy (AssumeRolePolicyDocument) for AWS Lambda Execution Role. Authorizes the Lambda service principal (lambda.amazonaws.com) to assume the role. Used with 'aws iam create-role --assume-role-policy-document'.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowLambdaServiceToAssumeExecutionRole",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+

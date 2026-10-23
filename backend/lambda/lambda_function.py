@@ -19,12 +19,14 @@ import abc
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-from typing import Any, Callable, Dict, Optional, Union
+import os
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 import uuid
 
 try:
     from publisher import (
         DEFAULT_MQTT_TOPIC,
+        Boto3IotDataPublisher,
         MockMQTTPublisher,
         MQTTPublishError,
         MQTTPublisher,
@@ -35,6 +37,7 @@ try:
 except ImportError:
     from .publisher import (
         DEFAULT_MQTT_TOPIC,
+        Boto3IotDataPublisher,
         MockMQTTPublisher,
         MQTTPublishError,
         MQTTPublisher,
@@ -186,6 +189,180 @@ class StaticCommitMessageProvider(CommitMessageProvider):
         raise CommitMessageError(
             f"No commit message configured for commit ID '{commit_id}' in repository '{repository}'."
         )
+
+
+PERMANENT_CODECOMMIT_ERROR_CODES = {
+    "CommitDoesNotExistException",
+    "CommitIdDoesNotExistException",
+    "CommitIdRequiredException",
+    "InvalidCommitIdException",
+    "RepositoryDoesNotExistException",
+    "RepositoryNameRequiredException",
+    "InvalidRepositoryNameException",
+    "ValidationException",
+}
+
+TRANSIENT_CODECOMMIT_ERROR_CODES = {
+    "ThrottlingException",
+    "RequestThrottled",
+    "ThrottledException",
+    "ProvisionedThroughputExceededException",
+    "TooManyRequestsException",
+    "InternalServerError",
+    "ServiceUnavailableException",
+}
+
+
+def _extract_boto_error_details(err: Exception) -> Optional[Tuple[str, str, int]]:
+    """Extract (code, message, status_code) from a botocore ClientError or duck-typed mock."""
+    response = getattr(err, "response", None)
+    if not isinstance(response, dict):
+        return None
+    error_dict = response.get("Error", {})
+    if not isinstance(error_dict, dict):
+        return None
+    code = error_dict.get("Code", "")
+    message = error_dict.get("Message", str(err))
+    status_code = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 400)
+    return code, message, status_code
+
+
+class Boto3CodeCommitProvider(CommitMessageProvider):
+    """
+    Production CommitMessageProvider that retrieves commit messages from
+    AWS CodeCommit using the AWS SDK for Python (boto3).
+
+    Validates inputs, calls CodeCommit get_commit, validates the returned commit metadata,
+    and classifies transient vs permanent failures.
+    """
+
+    def __init__(
+        self,
+        client: Optional[Any] = None,
+        region_name: Optional[str] = None,
+        session: Optional[Any] = None,
+    ):
+        self._client = client
+        self._region_name = (
+            region_name
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+        )
+        self._session = session
+
+    def _get_client(self) -> Any:
+        """Get or lazily instantiate the boto3 'codecommit' client."""
+        if self._client is not None:
+            return self._client
+        try:
+            import boto3
+        except ImportError as err:
+            raise TransientCommitRetrievalError(
+                "AWS SDK (boto3) is required for Boto3CodeCommitProvider but is not installed."
+            ) from err
+
+        kwargs: Dict[str, Any] = {}
+        if self._region_name:
+            kwargs["region_name"] = self._region_name
+
+        try:
+            if self._session is not None:
+                self._client = self._session.client("codecommit", **kwargs)
+            else:
+                self._client = boto3.client("codecommit", **kwargs)
+            return self._client
+        except Exception as err:
+            raise TransientCommitRetrievalError(
+                f"Failed to create CodeCommit client: {err}"
+            ) from err
+
+    def get_commit_message(self, repository: str, commit_id: str) -> str:
+        """
+        Retrieve commit message from CodeCommit for the specified repository and commit SHA.
+
+        Args:
+            repository: CodeCommit repository name.
+            commit_id: Commit hash/SHA.
+
+        Returns:
+            Non-empty, trimmed commit message string.
+
+        Raises:
+            PermanentCommitMessageError: If commit or repository is missing/invalid,
+                                         or returned message is empty.
+            TransientCommitRetrievalError: If API call throttles, times out, or fails transiently.
+        """
+        if not repository or not isinstance(repository, str) or not repository.strip():
+            raise PermanentCommitMessageError("Repository name must be a non-empty string.")
+        if not commit_id or not isinstance(commit_id, str) or not commit_id.strip():
+            raise PermanentCommitMessageError("Commit ID must be a non-empty string.")
+
+        clean_repo = repository.strip()
+        clean_commit_id = commit_id.strip()
+
+        client = self._get_client()
+
+        try:
+            response = client.get_commit(
+                repositoryName=clean_repo,
+                commitId=clean_commit_id,
+            )
+        except Exception as err:
+            self._handle_client_error(err, clean_repo, clean_commit_id)
+
+        if not isinstance(response, dict):
+            raise PermanentCommitMessageError("CodeCommit get_commit returned non-dictionary response.")
+
+        commit_info = response.get("commit")
+        if not isinstance(commit_info, dict):
+            raise PermanentCommitMessageError("CodeCommit response missing 'commit' dictionary.")
+
+        message = commit_info.get("message")
+        if message is None:
+            raise PermanentCommitMessageError(
+                f"Commit '{clean_commit_id}' in repository '{clean_repo}' is missing the 'message' field."
+            )
+        if not isinstance(message, str) or not message.strip():
+            raise PermanentCommitMessageError(
+                f"Commit '{clean_commit_id}' in repository '{clean_repo}' contains an empty commit message."
+            )
+        return message.strip()
+
+    def _handle_client_error(self, err: Exception, repository: str, commit_id: str) -> None:
+        """Categorize CodeCommit API exceptions as permanent or transient."""
+        if isinstance(err, CommitMessageError):
+            raise err
+
+        details = _extract_boto_error_details(err)
+        if details is not None:
+            code, message, status_code = details
+            if code in PERMANENT_CODECOMMIT_ERROR_CODES:
+                raise PermanentCommitMessageError(
+                    f"CodeCommit rejected commit query for '{commit_id}' in '{repository}' with permanent error ({code}): {message}"
+                ) from err
+            if code in TRANSIENT_CODECOMMIT_ERROR_CODES or status_code >= 500:
+                raise TransientCommitRetrievalError(
+                    f"CodeCommit transient failure retrieving commit '{commit_id}' in '{repository}' ({code}): {message}"
+                ) from err
+            if 400 <= status_code < 500:
+                raise PermanentCommitMessageError(
+                    f"CodeCommit client error for '{commit_id}' in '{repository}' ({code}): {message}"
+                ) from err
+
+        if isinstance(err, (ConnectionError, TimeoutError, OSError)):
+            raise TransientCommitRetrievalError(
+                f"Network connection error contacting CodeCommit for commit '{commit_id}' in '{repository}': {err}"
+            ) from err
+
+        err_type = type(err).__name__
+        if "Timeout" in err_type or "Connection" in err_type or "Network" in err_type:
+            raise TransientCommitRetrievalError(
+                f"Network error ({err_type}) contacting CodeCommit for commit '{commit_id}' in '{repository}': {err}"
+            ) from err
+
+        raise TransientCommitRetrievalError(
+            f"Unexpected error retrieving commit '{commit_id}' from CodeCommit repository '{repository}': {err}"
+        ) from err
 
 
 # Type alias for acceptable message provider arguments
@@ -508,21 +685,29 @@ def lambda_handler(
         }
 
 
+_UNSET = object()
+
+
 def production_lambda_handler(
     event: Dict[str, Any],
     context: Any = None,
-    message_provider: Optional[MessageProviderType] = None,
-    publisher: Optional[MQTTPublisher] = None,
-    mqtt_topic: str = DEFAULT_MQTT_TOPIC,
+    message_provider: Any = _UNSET,
+    publisher: Any = _UNSET,
+    mqtt_topic: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Production entry point for asynchronous EventBridge Lambda invocations.
 
+    When invoked by AWS Lambda (where message_provider and publisher are not supplied):
+    - Automatically constructs Boto3CodeCommitProvider using the AWS SDK.
+    - Automatically constructs Boto3IotDataPublisher using the AWS SDK and environment config.
+    - Resolves MQTT topic from parameter, 'MQTT_TOPIC' environment variable, or default 'gitops/commits'.
+
     Asynchronous Failure Handling Strategy:
     - Permanent validation errors (EventValidationError, UnsupportedEventError,
-      PermanentCommitMessageError) are caught and acknowledged with statusCode 400
-      (retryable=False). The invocation exits cleanly with code 0 so EventBridge
-      does NOT fruitlessly retry permanent poison-pill events.
+      PermanentCommitMessageError, PermanentMQTTPublishError) are caught and acknowledged
+      with statusCode 400 (retryable=False). The invocation exits cleanly with code 0 so
+      neither EventBridge nor Lambda async queues fruitlessly retry permanent poison pills.
     - Transient infrastructure errors (TransientCommitRetrievalError,
       TransientMQTTPublishError, unexpected exceptions) are raised as unhandled
       exceptions. AWS Lambda marks the invocation as failed, triggering Lambda's
@@ -534,12 +719,23 @@ def production_lambda_handler(
       function execution failures are managed exclusively by Lambda Event Invoke Config.
     - Successful events return statusCode 200 with payload and published=True.
     """
+    target_topic = (
+        mqtt_topic
+        if mqtt_topic is not None
+        else os.environ.get("MQTT_TOPIC", DEFAULT_MQTT_TOPIC)
+    )
+
+    if message_provider is _UNSET:
+        message_provider = Boto3CodeCommitProvider()
+    if publisher is _UNSET:
+        publisher = Boto3IotDataPublisher()
+
     return lambda_handler(
         event=event,
         context=context,
         message_provider=message_provider,
         publisher=publisher,
-        mqtt_topic=mqtt_topic,
+        mqtt_topic=target_topic,
         raise_on_retryable=True,
     )
 

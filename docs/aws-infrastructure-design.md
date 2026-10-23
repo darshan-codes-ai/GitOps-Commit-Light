@@ -13,9 +13,11 @@ To bridge the offline Python backend to live AWS services in the next implementa
 
 | Template File | AWS Component / Mechanism | Purpose / Description |
 | :--- | :--- | :--- |
+| [`aws/trust-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/trust-policy.json) | IAM Role Trust Policy (`create-role`) | Authorizes the AWS Lambda service principal (`lambda.amazonaws.com`) to assume the execution role. |
 | [`aws/eventbridge-rule.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-rule.json) | EventBridge Rule (`put-rule`) | Filters CodeCommit repository state changes strictly for branch updates on `main`. |
 | [`aws/eventbridge-target.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-target.json) | EventBridge Target (`put-targets`) | Configures Path A Target Delivery: Lambda target, delivery retry limits (185 attempts, 24h), and Target DLQ. |
-| [`aws/lambda-function-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-function-config.json) | Lambda Function Config (`create-function`) | Establishes runtime settings and enforces `lambda_function.production_lambda_handler` as the verified entry point. |
+| [`aws/eventbridge-dlq-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-dlq-policy.json) | SQS Queue Resource Policy (`set-queue-attributes`) | Authorizes the EventBridge service principal (`events.amazonaws.com`) to write failed target delivery events to the EventBridge DLQ. |
+| [`aws/lambda-function-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-function-config.json) | Lambda Function Config (`create-function`) | Establishes runtime settings, environment variables (`IOT_DATA_ENDPOINT`, `MQTT_TOPIC`), and enforces `lambda_function.production_lambda_handler` as the verified entry point. |
 | [`aws/lambda-event-invoke-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-event-invoke-config.json) | Lambda Event Invoke Config (`put-function-event-invoke-config`) | Configures Path B Asynchronous Execution: function retry limits (2 retries, 6h), and Lambda On-Failure DLQ destination. |
 | [`aws/lambda-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-policy.json) | IAM Execution Role Policy | Grants Lambda permissions to log to CloudWatch, query CodeCommit, publish to IoT Core, and write to Lambda DLQ. |
 | [`aws/lambda-resource-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-resource-policy.json) | Lambda Resource Policy (`add-permission`) | Authorizes the Amazon EventBridge service principal to invoke the Lambda function. |
@@ -27,11 +29,17 @@ To bridge the offline Python backend to live AWS services in the next implementa
 
 Responsibilities are strictly separated across isolated planes to enforce the principle of least privilege:
 
-### A. Lambda Execution-Role Policy (`aws/lambda-policy.json`)
-Attached to the IAM role assumed by the Lambda function during execution:
+### A. Lambda Execution-Role Trust Policy (`aws/trust-policy.json`)
+Attached to the IAM role itself (AssumeRolePolicyDocument):
+- **Principal:** `lambda.amazonaws.com`
+- **Action:** `sts:AssumeRole`
+- *Authorizes the AWS Lambda compute service to assume this role when executing the function.*
+
+### B. Lambda Execution-Role Permissions Policy (`aws/lambda-policy.json`)
+Inline or customer-managed policy attached to the IAM role assumed by Lambda:
 - **CloudWatch Logs:**
-  - `logs:CreateLogStream`, `logs:PutLogEvents`
-  - Resource: `arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>:*`
+  - `logs:CreateLogGroup` on `arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>` (auto-provisions log group on first execution).
+  - `logs:CreateLogStream`, `logs:PutLogEvents` on `arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>:*`.
   - *No administrative `logs:*` wildcard.*
 - **AWS CodeCommit:**
   - `codecommit:GetCommit`
@@ -46,19 +54,36 @@ Attached to the IAM role assumed by the Lambda function during execution:
   - Resource: `arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<LAMBDA_DLQ_NAME>`
   - *Enables the Lambda service to forward invocation records to the On-Failure SQS queue when function retries are exhausted.*
 
-### B. EventBridge Invocation Permission (`aws/lambda-resource-policy.json`)
+### C. EventBridge Target DLQ SQS Queue Policy (`aws/eventbridge-dlq-policy.json`)
+Attached to the Amazon SQS queue designated as `<EVENTBRIDGE_DLQ_NAME>`:
+- **Principal:** `events.amazonaws.com`
+- **Action:** `sqs:SendMessage`
+- **Resource:** `arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<EVENTBRIDGE_DLQ_NAME>`
+- **Conditions:** `aws:SourceArn` matches `arn:aws:events:<REGION>:<ACCOUNT_ID>:rule/<RULE_NAME>` and `aws:SourceAccount` matches `<ACCOUNT_ID>`.
+- *Authorizes EventBridge to write target delivery failure events (Path A) to its dedicated DLQ.*
+
+### D. EventBridge Invocation Permission (`aws/lambda-resource-policy.json`)
 Resource-based policy attached directly to the Lambda function resource:
 - **Principal:** `events.amazonaws.com`
 - **Action:** `lambda:InvokeFunction`
 - **Condition:** `ArnLike` matching `AWS:SourceArn: arn:aws:events:<REGION>:<ACCOUNT_ID>:rule/<RULE_NAME>`
 - *Guarantees that only the designated EventBridge rule can trigger the function.*
 
-### C. ESP32 IoT Certificate Policy (`aws/iot-policy.json`)
+### E. ESP32 IoT Certificate Policy (`aws/iot-policy.json`)
 Attached to the X.509 client certificate installed on the ESP32 hardware:
 - **`iot:Connect`:** Resource: `arn:aws:iot:<REGION>:<ACCOUNT_ID>:client/${iot:Connection.Thing.ThingName}`
 - **`iot:Subscribe`:** Resource: `arn:aws:iot:<REGION>:<ACCOUNT_ID>:topicfilter/gitops/commits` (*AWS IoT `topicfilter/` namespace*)
 - **`iot:Receive`:** Resource: `arn:aws:iot:<REGION>:<ACCOUNT_ID>:topic/gitops/commits` (*AWS IoT `topic/` namespace*)
 - **Security Invariant — No Publish Rights:** The ESP32 is exclusively a consumer/subscriber. It **must not** possess `iot:Publish` permissions, preventing edge device compromise from injecting falsified commit notifications.
+
+### 🛡️ Summary of Authorization Boundaries
+
+| Authorization Mechanism | Target Resource | Authorized Principal | Actions Permitted | Purpose |
+| :--- | :--- | :--- | :--- | :--- |
+| **Trust Policy** (`trust-policy.json`) | IAM Role | `lambda.amazonaws.com` | `sts:AssumeRole` | Allows Lambda to assume the execution role |
+| **Execution Policy** (`lambda-policy.json`) | CloudWatch, CodeCommit, IoT, SQS | Lambda Function | `logs:*`, `codecommit:GetCommit`, `iot:Publish`, `sqs:SendMessage` | Lambda runtime execution permissions |
+| **EventBridge DLQ Policy** (`eventbridge-dlq-policy.json`) | SQS (`<EVENTBRIDGE_DLQ_NAME>`) | `events.amazonaws.com` | `sqs:SendMessage` | EventBridge writes Path A delivery failures |
+| **Lambda OnFailure DLQ** (`lambda-policy.json`) | SQS (`<LAMBDA_DLQ_NAME>`) | Lambda Execution Role | `sqs:SendMessage` | Lambda writes Path B function execution failures |
 
 ---
 

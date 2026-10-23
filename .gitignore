@@ -52,6 +52,7 @@ dist/
 *.egg-info/
 .installed.cfg
 *.egg
+*.zip
 .pytest_cache/
 .coverage
 htmlcov/

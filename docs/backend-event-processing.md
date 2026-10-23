@@ -209,18 +209,52 @@ In accordance with least-privilege security principles, the future live cloud in
 
 ---
 
-## 🧩 What Is Mocked in This Milestone
+---
 
-* **EventBridge Event Payloads:** Synthetic JSON fixtures in [`tests/fixtures/`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/tests/fixtures/) simulate CodeCommit events.
-* **Commit Message Retrieval:** In-memory [`StaticCommitMessageProvider`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py#L93) simulates API retrieval.
-* **MQTT Message Broker:** [`MockMQTTPublisher`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/publisher.py#L65) records message delivery in memory without connecting to AWS IoT Core.
-* **Lambda Runtime & Context:** The handler runs as a pure Python function locally.
+## 🔌 Production Adapters: CodeCommit Provider & AWS IoT Core Publisher
+
+To transition from synthetic mocks to production AWS infrastructure, two production adapters are implemented:
+
+### 1. [`Boto3CodeCommitProvider`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py)
+* **SDK Client:** `boto3.client('codecommit')`
+* **API Operation:** `get_commit(repositoryName=repository, commitId=commit_id)`
+* **Validation:** Extracts `commit.message`, verifies non-empty string content, and strips whitespace.
+* **Error Handling & Classification:**
+  * *Permanent Errors (`PermanentCommitMessageError`):* Missing commit/repo (`CommitDoesNotExistException`, `RepositoryDoesNotExistException`, `InvalidCommitIdException`, `ValidationException`), or response missing the `message` field. Handled cleanly with `statusCode: 400` (non-retryable).
+  * *Transient Errors (`TransientCommitRetrievalError`):* API rate limits (`ThrottlingException`, `TooManyRequestsException`), 5xx server errors (`InternalServerError`), network connection timeouts, or socket failures. Propagated as unhandled exceptions to trigger Lambda async retries.
+
+### 2. [`Boto3IotDataPublisher`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/publisher.py)
+* **SDK Client:** `boto3.client('iot-data', endpoint_url=endpoint_url)`
+* **API Operation:** `publish(topic=topic, qos=0, payload=json_bytes)`
+* **Endpoint Resolution:** Reads `IOT_DATA_ENDPOINT` environment variable (e.g. `https://<prefix>-ats.iot.<region>.amazonaws.com`). Formats URL with `https://` if missing. Raises `PermanentMQTTPublishError` if unconfigured.
+* **Validation & Success Confirmation:**
+  * Rejects subscription wildcards (`+`, `#`).
+  * Confirms JSON serializability of payload dictionary.
+  * Checks HTTP response `ResponseMetadata.HTTPStatusCode == 200`.
+* **Error Handling & Classification:**
+  * *Permanent Errors (`PermanentMQTTPublishError`):* `UnauthorizedException`, `InvalidRequestException`, `MethodNotAllowedException`. Handled cleanly with `statusCode: 400`/`500` non-retryable.
+  * *Transient Errors (`TransientMQTTPublishError`):* `ThrottlingException`, `InternalFailureException`, HTTP 5xx, or network timeouts. Propagated as unhandled exceptions to trigger Lambda async retries.
+
+### 3. Production Handler Wiring (`production_lambda_handler`)
+In AWS Lambda execution, the runtime invokes `production_lambda_handler(event, context)`.
+* When `message_provider` is not supplied, it automatically constructs `Boto3CodeCommitProvider()`.
+* When `publisher` is not supplied, it automatically constructs `Boto3IotDataPublisher()`.
+* When `mqtt_topic` is not supplied, it checks the `MQTT_TOPIC` environment variable or defaults to `gitops/commits`.
+* In automated tests, custom mock providers and publishers can be injected directly into `production_lambda_handler(event, message_provider=..., publisher=...)` for 100% offline testability.
 
 ---
 
-## ☁️ What Still Requires Live AWS Integration
+## 🧩 Offline Testability & Mock Safety
 
-1. **AWS CodeCommit API Call:** Retrieving live commit messages using `boto3.client('codecommit').get_commit(...)`.
-2. **Amazon EventBridge Rule:** Deploying the event pattern rule to route real git push events.
-3. **AWS IoT Core Data Endpoint:** Connecting `boto3.client('iot-data')` to publish over TLS.
-4. **AWS IAM Infrastructure:** Provisioning the execution role and IoT device policies detailed above.
+* **Offline Test Suite:** 105 passing unit tests execute in ~0.07 seconds without requiring boto3 to be installed or making live AWS network calls.
+* **Client Injection:** Both `Boto3CodeCommitProvider(client=...)` and `Boto3IotDataPublisher(client=...)` support injected stub clients for offline testing.
+* **Mock Implementations:** [`StaticCommitMessageProvider`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py) and [`MockMQTTPublisher`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/publisher.py) remain fully preserved for local unit and integration tests.
+
+---
+
+## ☁️ What Still Requires Live Cloud Provisioning (Pre-Deployment)
+
+1. **AWS CodeCommit Repository:** Creating the CodeCommit repository and pushing the `main` branch.
+2. **AWS IoT Core ATS Endpoint:** Retrieving the account ATS endpoint (`aws iot describe-endpoint --endpoint-type iot:Data-ATS`) and configuring `IOT_DATA_ENDPOINT` in Lambda environment variables.
+3. **AWS IAM Infrastructure:** Provisioning the execution role and IoT device policies detailed in [`docs/aws-infrastructure-design.md`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/docs/aws-infrastructure-design.md).
+4. **Amazon EventBridge Rule & SQS DLQs:** Creating the rule, target, and DLQs in the target AWS account.

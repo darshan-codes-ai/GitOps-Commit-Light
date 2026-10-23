@@ -1,0 +1,24 @@
+{
+  "_comment": "SQS Queue Resource Policy for EventBridge Target Dead-Letter Queue (DLQ). Authorizes the EventBridge service principal (events.amazonaws.com) to deliver failed target delivery events for the specific rule. Replace placeholders (<REGION>, <ACCOUNT_ID>, <EVENTBRIDGE_DLQ_NAME>, <RULE_NAME>) before deployment.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEventBridgeToSendToTargetDLQ",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "events.amazonaws.com"
+      },
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<EVENTBRIDGE_DLQ_NAME>",
+      "Condition": {
+        "ArnEquals": {
+          "aws:SourceArn": "arn:aws:events:<REGION>:<ACCOUNT_ID>:rule/<RULE_NAME>"
+        },
+        "StringEquals": {
+          "aws:SourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    }
+  ]
+}
+
