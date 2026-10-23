@@ -1,0 +1,13 @@
+{
+  "_comment": "AWS Lambda Asynchronous Event Invoke Configuration (aws lambda put-function-event-invoke-config). Controls Path B (Function Execution): retries and failure destination when production_lambda_handler raises an unhandled exception. Service limits: MaximumRetryAttempts (0-2), MaximumEventAgeInSeconds (60-21600). Replace placeholders (<REGION>, <ACCOUNT_ID>, <FUNCTION_NAME>, <LAMBDA_DLQ_NAME>) before deployment.",
+  "FunctionName": "<FUNCTION_NAME>",
+  "Qualifier": "$LATEST",
+  "MaximumRetryAttempts": 2,
+  "MaximumEventAgeInSeconds": 21600,
+  "DestinationConfig": {
+    "OnFailure": {
+      "Destination": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<LAMBDA_DLQ_NAME>"
+    }
+  }
+}
+

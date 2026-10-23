@@ -1,5 +1,5 @@
 {
-  "_comment": "IAM Execution Role Policy for GitOps Commit Light Lambda Function. Replace placeholders (<REGION>, <ACCOUNT_ID>, <REPOSITORY_NAME>, <FUNCTION_NAME>) before deployment.",
+  "_comment": "IAM Execution Role Policy for GitOps Commit Light Lambda Function. Replace placeholders (<REGION>, <ACCOUNT_ID>, <REPOSITORY_NAME>, <FUNCTION_NAME>, <LAMBDA_DLQ_NAME>) before deployment.",
   "Version": "2012-10-17",
   "Statement": [
     {
@@ -26,7 +26,14 @@
         "iot:Publish"
       ],
       "Resource": "arn:aws:iot:<REGION>:<ACCOUNT_ID>:topic/gitops/commits"
+    },
+    {
+      "Sid": "LambdaAsyncFailureDestinationDelivery",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:SendMessage"
+      ],
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<LAMBDA_DLQ_NAME>"
     }
   ]
 }
-

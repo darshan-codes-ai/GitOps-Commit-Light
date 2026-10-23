@@ -3,7 +3,7 @@ GitOps Commit Light — Asynchronous Lambda Failure Handling Automated Tests
 
 These tests verify:
 1. Production asynchronous invocation semantics: retryable transient failures
-   propagate as unhandled invocation failures to trigger EventBridge retries.
+   propagate as unhandled invocation failures to trigger Lambda async retries and DLQ routing.
 2. Permanent validation errors ('poison pills') are acknowledged cleanly (400)
    without raising, preventing wasteful and endless retry loops.
 3. Offline handler compatibility is fully preserved.

@@ -1,0 +1,11 @@
+{
+  "_comment": "AWS Lambda Function Configuration definition. Configures runtime settings and establishes production_lambda_handler as the verified entry point for asynchronous event processing. Replace placeholders (<REGION>, <ACCOUNT_ID>, <FUNCTION_NAME>, <EXECUTION_ROLE_NAME>) before deployment.",
+  "FunctionName": "<FUNCTION_NAME>",
+  "Runtime": "python3.12",
+  "Handler": "lambda_function.production_lambda_handler",
+  "Role": "arn:aws:iam::<ACCOUNT_ID>:role/<EXECUTION_ROLE_NAME>",
+  "Description": "GitOps Commit Light - Asynchronous EventBridge to AWS IoT Core MQTT publisher",
+  "Timeout": 30,
+  "MemorySize": 128
+}
+

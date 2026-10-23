@@ -3,11 +3,20 @@
 Validates:
 1. JSON syntax correctness across all configuration files in aws/.
 2. Absence of hardcoded AWS 12-digit account IDs, real regions, or secret keys.
-3. Least-privilege IAM policy invariants:
+3. Decoupled Retry & DLQ Architecture (Path A vs Path B):
+   - Path A (Target Delivery): EventBridge Target RetryPolicy (0-185 attempts, max 86400s)
+     and EventBridge DeadLetterConfig.
+   - Path B (Function Execution): Lambda Asynchronous Event Invoke Config (0-2 attempts,
+     max 21600s) and On-Failure Destination DLQ.
+   - Distinct retry counters and compliance with current AWS service limits.
+4. Production Handler Entry Point:
+   - Verifies lambda-function-config.json specifies 'lambda_function.production_lambda_handler'.
+5. Least-privilege IAM policy invariants:
    - Lambda execution role:
      * iot:Publish restricted strictly to 'gitops/commits' topic (no wildcards).
      * codecommit:GetCommit read-only on repository ARN.
      * logs:CreateLogStream and logs:PutLogEvents restricted to function log-group.
+     * sqs:SendMessage restricted to Lambda On-Failure DLQ ARN.
    - ESP32 IoT certificate policy:
      * Actions restricted to iot:Connect, iot:Subscribe, and iot:Receive.
      * iot:Publish is strictly absent (subscriber-only device).
@@ -20,8 +29,8 @@ Validates:
 """
 
 import json
-import re
 from pathlib import Path
+import re
 import unittest
 
 AWS_DIR = Path(__file__).resolve().parent.parent / "aws"
@@ -32,10 +41,12 @@ class TestAwsConfigurationJson(unittest.TestCase):
 
     EXPECTED_FILES = [
         "eventbridge-rule.json",
-        "lambda-policy.json",
-        "iot-policy.json",
         "eventbridge-target.json",
+        "lambda-function-config.json",
+        "lambda-event-invoke-config.json",
+        "lambda-policy.json",
         "lambda-resource-policy.json",
+        "iot-policy.json",
     ]
 
     def test_all_expected_files_exist(self):
@@ -50,7 +61,7 @@ class TestAwsConfigurationJson(unittest.TestCase):
     def test_all_json_files_parse_validly(self):
         """Verify that every JSON file in aws/ contains valid JSON syntax."""
         json_files = list(AWS_DIR.glob("*.json"))
-        self.assertGreaterEqual(len(json_files), 5)
+        self.assertGreaterEqual(len(json_files), 7)
         for json_file in json_files:
             with open(json_file, "r", encoding="utf-8") as f:
                 try:
@@ -63,7 +74,6 @@ class TestAwsConfigurationJson(unittest.TestCase):
 
     def test_no_hardcoded_aws_account_ids_or_credentials(self):
         """Verify that no real 12-digit AWS account IDs or secrets exist in any template."""
-        # Regex for 12 consecutive digits (standard AWS account ID format)
         account_id_pattern = re.compile(r"\b\d{12}\b")
         secret_indicators = [
             "BEGIN PRIVATE KEY",
@@ -75,7 +85,6 @@ class TestAwsConfigurationJson(unittest.TestCase):
         for json_file in AWS_DIR.glob("*.json"):
             content = json_file.read_text(encoding="utf-8")
 
-            # Check for 12-digit numbers
             matches = account_id_pattern.findall(content)
             self.assertEqual(
                 matches,
@@ -83,7 +92,6 @@ class TestAwsConfigurationJson(unittest.TestCase):
                 f"Hardcoded 12-digit AWS account ID found in {json_file.name}: {matches}",
             )
 
-            # Check for secrets/key markers
             for indicator in secret_indicators:
                 self.assertNotIn(
                     indicator,
@@ -91,7 +99,6 @@ class TestAwsConfigurationJson(unittest.TestCase):
                     f"Credential indicator '{indicator}' detected in {json_file.name}",
                 )
 
-            # Ensure placeholder format is followed
             self.assertIn(
                 "<ACCOUNT_ID>",
                 content,
@@ -110,7 +117,7 @@ class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
     def test_statement_structure(self):
         """Verify policy version and statements."""
         self.assertEqual(self.policy.get("Version"), "2012-10-17")
-        self.assertGreaterEqual(len(self.statements), 3)
+        self.assertGreaterEqual(len(self.statements), 4)
 
     def test_iot_publish_strictly_scoped(self):
         """Verify iot:Publish is scoped strictly to topic/gitops/commits without wildcards."""
@@ -132,7 +139,6 @@ class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
             "arn:aws:iot:<REGION>:<ACCOUNT_ID>:topic/gitops/commits",
             "iot:Publish must be scoped strictly to 'topic/gitops/commits' without wildcards",
         )
-        # Explicitly verify no wildcard topic or action
         self.assertNotIn("*", resource)
 
     def test_codecommit_read_only_access(self):
@@ -151,7 +157,6 @@ class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
         )
         self.assertEqual(cc_stmt.get("Effect"), "Allow")
 
-        # Ensure no write actions are granted
         actions = cc_stmt.get("Action")
         if isinstance(actions, str):
             actions = [actions]
@@ -190,6 +195,27 @@ class TestLambdaPolicyLeastPrivilege(unittest.TestCase):
             cw_stmt.get("Resource", "").startswith(
                 "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<FUNCTION_NAME>"
             )
+        )
+
+    def test_lambda_dlq_send_message_permission(self):
+        """Verify Lambda execution role has sqs:SendMessage for the On-Failure DLQ."""
+        dlq_stmt = next(
+            (
+                s
+                for s in self.statements
+                if "sqs:SendMessage" in s.get("Action", [])
+                or s.get("Action") == "sqs:SendMessage"
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            dlq_stmt,
+            "Missing sqs:SendMessage statement in Lambda policy for On-Failure DLQ",
+        )
+        self.assertEqual(dlq_stmt.get("Effect"), "Allow")
+        self.assertEqual(
+            dlq_stmt.get("Resource"),
+            "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<LAMBDA_DLQ_NAME>",
         )
 
 
@@ -316,8 +342,12 @@ class TestEventBridgeAndLambdaResourcePolicy(unittest.TestCase):
             "arn:aws:events:<REGION>:<ACCOUNT_ID>:rule/<RULE_NAME>",
         )
 
-    def test_eventbridge_target_retry_and_dlq_configuration(self):
-        """Verify EventBridge target includes retry limits and DLQ configuration."""
+
+class TestAsynchronousRetryAndFailureRecovery(unittest.TestCase):
+    """Test the decoupling between Path A (EventBridge Delivery) and Path B (Lambda Execution)."""
+
+    def test_path_a_eventbridge_target_retry_policy(self):
+        """Verify Path A EventBridge target retry limits comply with AWS service limits."""
         with open(AWS_DIR / "eventbridge-target.json", "r", encoding="utf-8") as f:
             target_config = json.load(f)
 
@@ -326,13 +356,78 @@ class TestEventBridgeAndLambdaResourcePolicy(unittest.TestCase):
         target = targets[0]
 
         retry = target.get("RetryPolicy", {})
-        self.assertIn("MaximumEventAgeInSeconds", retry)
-        self.assertIn("MaximumRetryAttempts", retry)
+        attempts = retry.get("MaximumRetryAttempts")
+        age = retry.get("MaximumEventAgeInSeconds")
+
+        # AWS EventBridge Target Service Limits: attempts in [0, 185], age in [60, 86400]
+        self.assertIsInstance(attempts, int)
+        self.assertTrue(0 <= attempts <= 185, f"Attempts {attempts} exceeds EventBridge limit [0, 185]")
+        self.assertIsInstance(age, int)
+        self.assertTrue(60 <= age <= 86400, f"Event age {age} exceeds EventBridge limit [60, 86400]")
 
         dlq = target.get("DeadLetterConfig", {})
-        self.assertTrue(dlq.get("Arn", "").startswith("arn:aws:sqs:"))
+        self.assertEqual(
+            dlq.get("Arn"),
+            "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<EVENTBRIDGE_DLQ_NAME>",
+            "EventBridge target DLQ must reference the dedicated EventBridge DLQ ARN",
+        )
+
+    def test_path_b_lambda_event_invoke_config(self):
+        """Verify Path B Lambda async invocation config complies with AWS service limits."""
+        with open(AWS_DIR / "lambda-event-invoke-config.json", "r", encoding="utf-8") as f:
+            invoke_config = json.load(f)
+
+        attempts = invoke_config.get("MaximumRetryAttempts")
+        age = invoke_config.get("MaximumEventAgeInSeconds")
+
+        # AWS Lambda Asynchronous Invocation Service Limits: attempts in [0, 2], age in [60, 21600]
+        self.assertIsInstance(attempts, int)
+        self.assertTrue(0 <= attempts <= 2, f"Attempts {attempts} exceeds Lambda async limit [0, 2]")
+        self.assertIsInstance(age, int)
+        self.assertTrue(60 <= age <= 21600, f"Event age {age} exceeds Lambda async limit [60, 21600]")
+
+        dest = invoke_config.get("DestinationConfig", {}).get("OnFailure", {}).get("Destination")
+        self.assertEqual(
+            dest,
+            "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<LAMBDA_DLQ_NAME>",
+            "Lambda On-Failure destination must reference the dedicated Lambda DLQ ARN",
+        )
+
+    def test_retry_counters_are_distinct(self):
+        """Verify EventBridge and Lambda do NOT share one retry counter or configuration."""
+        with open(AWS_DIR / "eventbridge-target.json", "r", encoding="utf-8") as f:
+            eb_config = json.load(f)
+        with open(AWS_DIR / "lambda-event-invoke-config.json", "r", encoding="utf-8") as f:
+            lambda_config = json.load(f)
+
+        eb_attempts = eb_config["Targets"][0]["RetryPolicy"]["MaximumRetryAttempts"]
+        lambda_attempts = lambda_config["MaximumRetryAttempts"]
+
+        # Crucial architectural assertion: EventBridge and Lambda have different retry counts
+        self.assertNotEqual(
+            eb_attempts,
+            lambda_attempts,
+            "EventBridge target retries and Lambda async retries must not share one counter",
+        )
+        self.assertEqual(eb_attempts, 185)
+        self.assertEqual(lambda_attempts, 2)
+
+    def test_lambda_function_config_sets_production_handler(self):
+        """Verify lambda-function-config.json configures production_lambda_handler as entry point."""
+        with open(AWS_DIR / "lambda-function-config.json", "r", encoding="utf-8") as f:
+            func_config = json.load(f)
+
+        self.assertEqual(
+            func_config.get("Handler"),
+            "lambda_function.production_lambda_handler",
+            "Production deployment must configure production_lambda_handler as the Lambda entry point",
+        )
+        self.assertTrue(
+            func_config.get("Runtime", "").startswith("python3."),
+            "Lambda runtime must be Python 3.x",
+        )
+        self.assertIn("<ACCOUNT_ID>", func_config.get("Role", ""))
 
 
 if __name__ == "__main__":
     unittest.main()
-

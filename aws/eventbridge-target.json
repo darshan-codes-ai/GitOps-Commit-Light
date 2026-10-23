@@ -1,5 +1,5 @@
 {
-  "_comment": "EventBridge Rule Target Configuration (used with 'aws events put-targets'). Replace placeholders (<REGION>, <ACCOUNT_ID>, <FUNCTION_NAME>, <DLQ_NAME>) before deployment.",
+  "_comment": "EventBridge Rule Target Configuration (aws events put-targets). Controls Path A (Target Delivery): retries delivery of the event to Lambda service if Lambda service is throttled/unavailable. Does NOT handle failures occurring inside Lambda function execution. Replace placeholders (<REGION>, <ACCOUNT_ID>, <FUNCTION_NAME>, <EVENTBRIDGE_DLQ_NAME>) before deployment.",
   "Targets": [
     {
       "Id": "GitOpsCommitLightLambdaTarget",
@@ -9,9 +9,8 @@
         "MaximumRetryAttempts": 185
       },
       "DeadLetterConfig": {
-        "Arn": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<DLQ_NAME>"
+        "Arn": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:<EVENTBRIDGE_DLQ_NAME>"
       }
     }
   ]
 }
-

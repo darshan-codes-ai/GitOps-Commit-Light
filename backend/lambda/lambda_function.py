@@ -431,7 +431,8 @@ def lambda_handler(
         mqtt_topic: Target MQTT topic string (defaults to 'gitops/commits').
         raise_on_retryable: If True, transient retryable failures are raised as
                             unhandled exceptions so AWS Lambda marks the invocation
-                            as failed to trigger EventBridge retries and DLQ routing.
+                            as failed to trigger Lambda's asynchronous invocation retry
+                            queue (up to 2 retries) and On-Failure DLQ destination routing.
                             If False (default), returns structured dicts with statusCode
                             for offline test convenience.
 
@@ -524,8 +525,13 @@ def production_lambda_handler(
       does NOT fruitlessly retry permanent poison-pill events.
     - Transient infrastructure errors (TransientCommitRetrievalError,
       TransientMQTTPublishError, unexpected exceptions) are raised as unhandled
-      exceptions. AWS Lambda marks the invocation as failed, triggering EventBridge
-      retry policies (exponential backoff) and eventual Dead-Letter Queue (DLQ) routing.
+      exceptions. AWS Lambda marks the invocation as failed, triggering Lambda's
+      asynchronous invocation retry mechanism (up to 2 retries) and eventual
+      routing to the Lambda On-Failure destination (DLQ).
+    - Note on EventBridge vs Lambda failure isolation:
+      EventBridge target RetryPolicy and DLQ handle target delivery failures (e.g. Lambda
+      service throttles or outages). Once Lambda accepts the event into its async queue,
+      function execution failures are managed exclusively by Lambda Event Invoke Config.
     - Successful events return statusCode 200 with payload and published=True.
     """
     return lambda_handler(

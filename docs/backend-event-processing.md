@@ -133,7 +133,7 @@ However, **Amazon EventBridge invokes AWS Lambda asynchronously** (`InvocationTy
 | Category | Examples | Nature | Desired Asynchronous Behavior |
 | :--- | :--- | :--- | :--- |
 | **Permanent Validation Errors (Poison Pills)** | • Missing `commitId` or `repositoryName`<br>• Non-CodeCommit source<br>• `referenceDeleted` events<br>• Malformed JSON | The event itself is invalid or unmonitored. Retrying 100 times will never fix it. | **Do NOT retry.** Acknowledge and drop cleanly with diagnostic logging (or record a CloudWatch metric). Retrying wastes compute time and delays the queue. |
-| **Transient Infrastructure Failures** | • CodeCommit API throttling / rate limit<br>• AWS IoT Core endpoint timeout<br>• Temporary TLS handshake blip | The event is valid, but an AWS service is momentarily unavailable. | **Must retry.** Must bubble up as an unhandled exception so EventBridge's retry policy (up to 24 hours with exponential backoff) retries the event until it succeeds. |
+| **Transient Infrastructure Failures** | • CodeCommit API throttling / rate limit<br>• AWS IoT Core endpoint timeout<br>• Temporary TLS handshake blip | The event is valid, but an AWS service is momentarily unavailable. | **Must retry.** Must bubble up as an unhandled exception so AWS Lambda's asynchronous invocation queue retries the event (up to 2 retries) before routing to the Lambda On-Failure DLQ. |
 
 ---
 
@@ -155,7 +155,8 @@ def production_lambda_handler(
     - Permanent validation errors: acknowledged cleanly with statusCode 400 (no exception raised).
       Prevents futile retries on unfixable poison-pill events.
     - Transient infrastructure errors: raised as unhandled exceptions.
-      Signals invocation failure to AWS Lambda runtime so EventBridge retries.
+      Signals invocation failure to AWS Lambda runtime so Lambda asynchronous invocation
+      retries the event (up to 2 retries) and routes to Lambda On-Failure DLQ if exhausted.
     """
     return lambda_handler(
         event=event,
@@ -174,9 +175,10 @@ def production_lambda_handler(
 | **Error Classification** | **Implemented** | [`backend/lambda/lambda_function.py`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py) — Distinguishes `PermanentError` (never retried) from `RetryableError` (always retried). |
 | **Invocation Failure Propagation** | **Implemented** | [`production_lambda_handler`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py#L487) — Raises unhandled exceptions for transient errors; returns 400 cleanly for permanent errors. |
 | **Publishing Confirmation** | **Implemented** | Strict boolean check confirms delivery only on explicit `True` from publisher. |
-| **EventBridge Retry Policy** | *Future AWS Configuration* | Attached to the EventBridge Rule target: Maximum Event Age (e.g. 24 hours), Maximum Retry Attempts (e.g. 185 attempts) with exponential backoff and jitter. |
-| **Dead-Letter Queue (DLQ)** | *Future AWS Configuration* | Amazon SQS standard queue attached to the EventBridge Rule target. Receives events that fail all retries. |
-| **DLQ Monitoring & Redrive** | *Future AWS Configuration* | CloudWatch Alarm on `ApproximateNumberOfMessagesVisible > 0` in DLQ, with SQS redrive to re-process once outages resolve. |
+| **EventBridge Target Delivery Retries (Path A)** | *Configured via Template* | [`aws/eventbridge-target.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-target.json) — Retries delivery of the event to Lambda service if Lambda API is unavailable (up to 185 attempts, 24 hours) with EventBridge Target DLQ. |
+| **Lambda Async Invocation Retries (Path B)** | *Configured via Template* | [`aws/lambda-event-invoke-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-event-invoke-config.json) — Retries unhandled function execution errors (up to 2 retries, 6 hours) before routing to Lambda On-Failure DLQ. |
+| **Lambda On-Failure DLQ Permissions** | *Configured via Template* | [`aws/lambda-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-policy.json) — Grants `sqs:SendMessage` for delivering failed invocation records to the Lambda DLQ. |
+| **DLQ Monitoring & Redrive** | *Future AWS Configuration* | CloudWatch Alarm on `ApproximateNumberOfMessagesVisible > 0` in DLQs, with SQS redrive to re-process once outages resolve. |
 
 ---
 
