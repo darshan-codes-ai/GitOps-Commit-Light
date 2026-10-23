@@ -378,3 +378,4 @@ def lambda_handler(
             "errorType": "InternalError",
             "message": f"Unexpected error during event processing: {err}",
         }
+

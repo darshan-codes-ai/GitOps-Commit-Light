@@ -123,3 +123,4 @@ class Boto3CodeCommitProvider(CommitMessageProvider):
 ```
 
 This design allows the same parsing and payload construction code to run identically in production without modifying existing business logic.
+
