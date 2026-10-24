@@ -824,10 +824,14 @@ def _get_github_webhook_secret(
 ) -> Optional[str]:
     """
     Resolve the GitHub webhook secret using the following priority:
-    1. Explicit parameter (if supplied as a non-empty string).
-    2. GITHUB_WEBHOOK_SECRET environment variable (plaintext secret).
-    3. AWS Secrets Manager using GITHUB_WEBHOOK_SECRET_ARN or SECRETS_MANAGER_SECRET_ID.
+    1. Explicit parameter (if supplied as a non-empty string, for test dependency injection).
+    2. AWS Secrets Manager using GITHUB_WEBHOOK_SECRET_ARN or SECRETS_MANAGER_SECRET_ID.
        - Caches retrieved secret in-memory across warm Lambda invocations.
+       - If configured, fails closed immediately on any retrieval, parsing, or empty secret failure.
+       - Never falls back to plaintext environment variables if a Secrets Manager identifier is set.
+    3. GITHUB_WEBHOOK_SECRET environment variable (plaintext secret fallback strictly for local/offline tests).
+       - Strictly disallowed when running inside AWS Lambda (detected via AWS_LAMBDA_FUNCTION_NAME).
+       - In AWS Lambda, omitting Secrets Manager identifiers fails closed with HTTP 500.
     4. Returns None if unconfigured or retrieval fails (enforcing fail-closed).
 
     Security:
@@ -840,56 +844,60 @@ def _get_github_webhook_secret(
             return secret_param.strip()
         return None
 
-    # 2. Direct environment variable (plaintext)
-    env_secret = os.environ.get("GITHUB_WEBHOOK_SECRET")
-    if env_secret and isinstance(env_secret, str) and env_secret.strip():
-        return env_secret.strip()
-
-    # 3. AWS Secrets Manager resolution
-    secret_id = (
+    # 2. Check AWS Secrets Manager identifiers first (production path)
+    raw_secret_id = (
         os.environ.get("GITHUB_WEBHOOK_SECRET_ARN")
         or os.environ.get("SECRETS_MANAGER_SECRET_ID")
     )
-    if not secret_id or not isinstance(secret_id, str) or not secret_id.strip():
-        return None
+    if raw_secret_id is not None and isinstance(raw_secret_id, str) and raw_secret_id.strip():
+        clean_secret_id = raw_secret_id.strip()
+        if clean_secret_id in _WEBHOOK_SECRET_CACHE:
+            return _WEBHOOK_SECRET_CACHE[clean_secret_id]
 
-    clean_secret_id = secret_id.strip()
-    if clean_secret_id in _WEBHOOK_SECRET_CACHE:
-        return _WEBHOOK_SECRET_CACHE[clean_secret_id]
+        try:
+            if secretsmanager_client is not None:
+                sm = secretsmanager_client
+            else:
+                import boto3
+                region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+                sm = boto3.client("secretsmanager", region_name=region) if region else boto3.client("secretsmanager")
 
-    try:
-        if secretsmanager_client is not None:
-            sm = secretsmanager_client
-        else:
-            import boto3
-            region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-            sm = boto3.client("secretsmanager", region_name=region) if region else boto3.client("secretsmanager")
+            response = sm.get_secret_value(SecretId=clean_secret_id)
+            secret_value = response.get("SecretString")
+            if not secret_value or not isinstance(secret_value, str) or not secret_value.strip():
+                return None
 
-        response = sm.get_secret_value(SecretId=clean_secret_id)
-        secret_value = response.get("SecretString")
-        if not secret_value or not isinstance(secret_value, str) or not secret_value.strip():
+            clean_val = secret_value.strip()
+            # Parse if stored as a JSON object: {"GITHUB_WEBHOOK_SECRET": "..."}
+            if clean_val.startswith("{") and clean_val.endswith("}"):
+                try:
+                    parsed = json.loads(clean_val)
+                    if isinstance(parsed, dict):
+                        extracted = (
+                            parsed.get("GITHUB_WEBHOOK_SECRET")
+                            or parsed.get("webhook_secret")
+                            or parsed.get("secret")
+                        )
+                        if extracted and isinstance(extracted, str) and extracted.strip():
+                            clean_val = extracted.strip()
+                        else:
+                            return None
+                except Exception:
+                    return None
+
+            _WEBHOOK_SECRET_CACHE[clean_secret_id] = clean_val
+            return clean_val
+        except Exception:
             return None
 
-        clean_val = secret_value.strip()
-        # Parse if stored as a JSON object: {"GITHUB_WEBHOOK_SECRET": "..."}
-        if clean_val.startswith("{") and clean_val.endswith("}"):
-            try:
-                parsed = json.loads(clean_val)
-                if isinstance(parsed, dict):
-                    extracted = (
-                        parsed.get("GITHUB_WEBHOOK_SECRET")
-                        or parsed.get("webhook_secret")
-                        or parsed.get("secret")
-                    )
-                    if extracted and isinstance(extracted, str) and extracted.strip():
-                        clean_val = extracted.strip()
-            except Exception:
-                pass
+    # 3. Direct environment variable (plaintext fallback strictly for local/offline testing)
+    #    Strictly disallowed in AWS Lambda runtime (detected via AWS_LAMBDA_FUNCTION_NAME).
+    if not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        env_secret = os.environ.get("GITHUB_WEBHOOK_SECRET")
+        if env_secret and isinstance(env_secret, str) and env_secret.strip():
+            return env_secret.strip()
 
-        _WEBHOOK_SECRET_CACHE[clean_secret_id] = clean_val
-        return clean_val
-    except Exception:
-        return None
+    return None
 
 
 def github_webhook_handler(

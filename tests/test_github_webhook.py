@@ -203,8 +203,12 @@ class TestGitHubWebhookHandler(unittest.TestCase):
         self.secret = SYNTHETIC_WEBHOOK_SECRET
         self.original_env_secret = os.environ.get("GITHUB_WEBHOOK_SECRET")
         self.original_env_secret_arn = os.environ.get("GITHUB_WEBHOOK_SECRET_ARN")
+        self.original_sm_secret_id = os.environ.get("SECRETS_MANAGER_SECRET_ID")
+        self.original_lambda_name = os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
         os.environ["GITHUB_WEBHOOK_SECRET"] = self.secret
         os.environ.pop("GITHUB_WEBHOOK_SECRET_ARN", None)
+        os.environ.pop("SECRETS_MANAGER_SECRET_ID", None)
+        os.environ.pop("AWS_LAMBDA_FUNCTION_NAME", None)
 
     def tearDown(self) -> None:
         """Restore environment variables and clear secret cache."""
@@ -218,6 +222,16 @@ class TestGitHubWebhookHandler(unittest.TestCase):
             os.environ["GITHUB_WEBHOOK_SECRET_ARN"] = self.original_env_secret_arn
         else:
             os.environ.pop("GITHUB_WEBHOOK_SECRET_ARN", None)
+
+        if self.original_sm_secret_id is not None:
+            os.environ["SECRETS_MANAGER_SECRET_ID"] = self.original_sm_secret_id
+        else:
+            os.environ.pop("SECRETS_MANAGER_SECRET_ID", None)
+
+        if self.original_lambda_name is not None:
+            os.environ["AWS_LAMBDA_FUNCTION_NAME"] = self.original_lambda_name
+        else:
+            os.environ.pop("AWS_LAMBDA_FUNCTION_NAME", None)
 
     # --------------------------------------------------------------------------
     # 1. Valid GitHub push event with valid HMAC-SHA256 signature
@@ -602,12 +616,41 @@ class TestGitHubWebhookHandler(unittest.TestCase):
         self.assertEqual(self.publisher.published_messages[0].payload["eventId"], delivery_id)
 
     # --------------------------------------------------------------------------
-    # 18. Secret retrieval from AWS Secrets Manager: failure fails closed
+    # 18. Secrets Manager takes precedence over plaintext fallback
     # --------------------------------------------------------------------------
-    def test_secret_retrieval_from_secretsmanager_failure_fails_closed(self) -> None:
-        """Verify that failure retrieving secret from Secrets Manager fails closed with HTTP 500."""
-        os.environ.pop("GITHUB_WEBHOOK_SECRET", None)
+    def test_secrets_manager_takes_precedence_over_plaintext_fallback(self) -> None:
+        """Verify Secrets Manager takes precedence when both ARN and plaintext env are set."""
         os.environ["GITHUB_WEBHOOK_SECRET_ARN"] = "arn:aws:secretsmanager:us-east-1:111122223333:secret:my-secret-123456"
+        os.environ["GITHUB_WEBHOOK_SECRET"] = "wrong_plaintext_secret_that_would_fail_hmac"
+
+        class MockSecretsManager:
+            def get_secret_value(self, SecretId: str) -> Dict[str, Any]:
+                return {"SecretString": SYNTHETIC_WEBHOOK_SECRET}
+
+        fixture = load_fixture("github_push_valid.json")
+        event = build_apigateway_v2_event(
+            body=fixture,
+            event_type="push",
+            secret=self.secret,
+        )
+
+        response = github_webhook_handler(
+            event,
+            publisher=self.publisher,
+            secret=None,
+            secretsmanager_client=MockSecretsManager(),
+        )
+
+        self.assertEqual(response.get("statusCode"), 200)
+        self.assertEqual(len(self.publisher.published_messages), 1)
+
+    # --------------------------------------------------------------------------
+    # 19. Secrets Manager failure fails closed even if plaintext fallback present
+    # --------------------------------------------------------------------------
+    def test_secrets_manager_failure_fails_closed_even_if_plaintext_env_set(self) -> None:
+        """Verify failure in Secrets Manager fails closed (HTTP 500) and does NOT fall back to plaintext."""
+        os.environ["GITHUB_WEBHOOK_SECRET_ARN"] = "arn:aws:secretsmanager:us-east-1:111122223333:secret:my-secret-123456"
+        os.environ["GITHUB_WEBHOOK_SECRET"] = SYNTHETIC_WEBHOOK_SECRET
 
         class FailingSecretsManager:
             def get_secret_value(self, SecretId: str) -> Dict[str, Any]:
@@ -631,7 +674,69 @@ class TestGitHubWebhookHandler(unittest.TestCase):
         self.assertEqual(len(self.publisher.published_messages), 0)
 
     # --------------------------------------------------------------------------
-    # 19. Secret retrieval from AWS Secrets Manager: in-memory caching
+    # 20. Missing or empty Secrets Manager secret data fails closed
+    # --------------------------------------------------------------------------
+    def test_secrets_manager_missing_or_empty_secret_data_fails_closed(self) -> None:
+        """Verify empty or missing SecretString in Secrets Manager response fails closed with HTTP 500."""
+        os.environ["GITHUB_WEBHOOK_SECRET_ARN"] = "arn:aws:secretsmanager:us-east-1:111122223333:secret:my-secret-123456"
+        os.environ["GITHUB_WEBHOOK_SECRET"] = SYNTHETIC_WEBHOOK_SECRET
+
+        for empty_payload in [{"SecretString": ""}, {"SecretString": "   "}, {}, {"SecretString": "{}"}]:
+            with self.subTest(empty_payload=empty_payload):
+                _clear_webhook_secret_cache()
+                self.publisher.clear()
+
+                class EmptySecretsManager:
+                    def get_secret_value(self, SecretId: str) -> Dict[str, Any]:
+                        return empty_payload
+
+                fixture = load_fixture("github_push_valid.json")
+                event = build_apigateway_v2_event(
+                    body=fixture,
+                    event_type="push",
+                    secret=self.secret,
+                )
+
+                response = github_webhook_handler(
+                    event,
+                    publisher=self.publisher,
+                    secret=None,
+                    secretsmanager_client=EmptySecretsManager(),
+                )
+
+                self.assertEqual(response.get("statusCode"), 500)
+                self.assertEqual(len(self.publisher.published_messages), 0)
+
+    # --------------------------------------------------------------------------
+    # 21. Offline test fallback works only when no Secrets Manager identifier configured
+    # --------------------------------------------------------------------------
+    def test_offline_fallback_works_only_when_no_secrets_manager_configured(self) -> None:
+        """Verify plaintext GITHUB_WEBHOOK_SECRET works as fallback when no ARN/ID is set."""
+        os.environ.pop("GITHUB_WEBHOOK_SECRET_ARN", None)
+        os.environ.pop("SECRETS_MANAGER_SECRET_ID", None)
+        os.environ["GITHUB_WEBHOOK_SECRET"] = SYNTHETIC_WEBHOOK_SECRET
+
+        fixture = load_fixture("github_push_valid.json")
+        delivery_id = "offline-fallback-delivery-001"
+        event = build_apigateway_v2_event(
+            body=fixture,
+            event_type="push",
+            delivery_id=delivery_id,
+            secret=self.secret,
+        )
+
+        response = github_webhook_handler(
+            event,
+            publisher=self.publisher,
+            secret=None,
+        )
+
+        self.assertEqual(response.get("statusCode"), 200)
+        self.assertEqual(len(self.publisher.published_messages), 1)
+        self.assertEqual(self.publisher.published_messages[0].payload["eventId"], delivery_id)
+
+    # --------------------------------------------------------------------------
+    # 22. In-memory caching across warm Lambda invocations
     # --------------------------------------------------------------------------
     def test_secret_retrieval_from_secretsmanager_caches_in_memory(self) -> None:
         """Verify that Secrets Manager secret is cached in-memory across warm Lambda invocations."""
@@ -659,6 +764,67 @@ class TestGitHubWebhookHandler(unittest.TestCase):
         resp2 = github_webhook_handler(event, publisher=self.publisher, secret=None, secretsmanager_client=sm_spy)
         self.assertEqual(resp2.get("statusCode"), 200)
         self.assertEqual(sm_spy.call_count, 1, "Warm invocation must not re-query Secrets Manager")
+
+    # --------------------------------------------------------------------------
+    # 23. Production runtime marker (AWS_LAMBDA_FUNCTION_NAME) rejects plaintext
+    # --------------------------------------------------------------------------
+    def test_production_lambda_runtime_rejects_plaintext_fallback_and_fails_closed(self) -> None:
+        """Verify that when AWS_LAMBDA_FUNCTION_NAME is set, plaintext fallback is disallowed and handler fails closed with 500."""
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "GitOpsCommitLight-GitHubWebhook"
+        os.environ.pop("GITHUB_WEBHOOK_SECRET_ARN", None)
+        os.environ.pop("SECRETS_MANAGER_SECRET_ID", None)
+        os.environ["GITHUB_WEBHOOK_SECRET"] = SYNTHETIC_WEBHOOK_SECRET
+
+        fixture = load_fixture("github_push_valid.json")
+        event = build_apigateway_v2_event(
+            body=fixture,
+            event_type="push",
+            secret=self.secret,
+        )
+
+        response = github_webhook_handler(
+            event,
+            publisher=self.publisher,
+            secret=None,
+        )
+
+        self.assertEqual(response.get("statusCode"), 500)
+        body = json.loads(response.get("body", "{}"))
+        self.assertEqual(body.get("status"), "error")
+        self.assertEqual(len(self.publisher.published_messages), 0)
+
+    # --------------------------------------------------------------------------
+    # 24. Production runtime marker with Secrets Manager succeeds normally
+    # --------------------------------------------------------------------------
+    def test_production_lambda_runtime_with_secrets_manager_succeeds(self) -> None:
+        """Verify that in AWS Lambda runtime (AWS_LAMBDA_FUNCTION_NAME set), Secrets Manager retrieves and validates successfully."""
+        os.environ["AWS_LAMBDA_FUNCTION_NAME"] = "GitOpsCommitLight-GitHubWebhook"
+        os.environ["GITHUB_WEBHOOK_SECRET_ARN"] = "arn:aws:secretsmanager:us-east-1:111122223333:secret:prod-secret-123"
+        os.environ["GITHUB_WEBHOOK_SECRET"] = "wrong_plaintext_secret_that_must_not_be_used"
+
+        class MockSecretsManager:
+            def get_secret_value(self, SecretId: str) -> Dict[str, Any]:
+                return {"SecretString": SYNTHETIC_WEBHOOK_SECRET}
+
+        fixture = load_fixture("github_push_valid.json")
+        delivery_id = "prod-runtime-delivery-001"
+        event = build_apigateway_v2_event(
+            body=fixture,
+            event_type="push",
+            delivery_id=delivery_id,
+            secret=self.secret,
+        )
+
+        response = github_webhook_handler(
+            event,
+            publisher=self.publisher,
+            secret=None,
+            secretsmanager_client=MockSecretsManager(),
+        )
+
+        self.assertEqual(response.get("statusCode"), 200)
+        self.assertEqual(len(self.publisher.published_messages), 1)
+        self.assertEqual(self.publisher.published_messages[0].payload["eventId"], delivery_id)
 
 
 if __name__ == "__main__":

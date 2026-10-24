@@ -38,10 +38,48 @@ Validates:
 import json
 from pathlib import Path
 import re
+from typing import Any
 import unittest
 import yaml
 
 AWS_DIR = Path(__file__).resolve().parent.parent / "aws"
+
+CFN_TAG_MAP = {
+    "!Ref": "Ref",
+    "!Sub": "Fn::Sub",
+    "!GetAtt": "Fn::GetAtt",
+    "!Join": "Fn::Join",
+    "!Select": "Fn::Select",
+    "!Split": "Fn::Split",
+    "!FindInMap": "Fn::FindInMap",
+    "!Base64": "Fn::Base64",
+    "!GetAZs": "Fn::GetAZs",
+    "!ImportValue": "Fn::ImportValue",
+    "!Condition": "Condition",
+}
+
+
+class CfnYamlLoader(yaml.SafeLoader):
+    """PyYAML SafeLoader extended with AWS CloudFormation intrinsic tag constructors."""
+    pass
+
+
+def _make_cfn_constructor(fn_name: str):
+    def constructor(loader: yaml.SafeLoader, node: yaml.Node) -> Any:
+        if isinstance(node, yaml.ScalarNode):
+            val = loader.construct_scalar(node)
+        elif isinstance(node, yaml.SequenceNode):
+            val = loader.construct_sequence(node)
+        elif isinstance(node, yaml.MappingNode):
+            val = loader.construct_mapping(node)
+        else:
+            val = None
+        return {fn_name: val}
+    return constructor
+
+
+for _tag, _fn_name in CFN_TAG_MAP.items():
+    yaml.add_constructor(_tag, _make_cfn_constructor(_fn_name), Loader=CfnYamlLoader)
 
 
 class TestAwsConfigurationJson(unittest.TestCase):
@@ -113,13 +151,17 @@ class TestAwsConfigurationJson(unittest.TestCase):
                     f"Credential indicator '{indicator}' detected in {template_file.name}",
                 )
 
-            # Templates containing ARNs or account IDs must use <ACCOUNT_ID> placeholder
-            if "arn:aws:" in content or "SourceAccount" in content:
+            # JSON templates containing ARNs or account IDs must use <ACCOUNT_ID> placeholder.
+            # YAML templates (CloudFormation) use CloudFormation pseudo parameters (${AWS::AccountId} / AWS::AccountId).
+            if template_file.suffix == ".json" and ("arn:aws:" in content or "SourceAccount" in content):
                 self.assertIn(
                     "<ACCOUNT_ID>",
                     content,
-                    f"Expected placeholder <ACCOUNT_ID> in {json_file.name}",
+                    f"Expected placeholder <ACCOUNT_ID> in {template_file.name}",
                 )
+            elif template_file.suffix in (".yaml", ".yml"):
+                if "AWS::AccountId" in content:
+                    self.assertIn("AWS::AccountId", content)
 
 
 class TestTrustPolicy(unittest.TestCase):
@@ -568,7 +610,8 @@ class TestGitHubAwsInfrastructure(unittest.TestCase):
         self.assertIn("<ACCOUNT_ID>", config.get("Role", ""))
 
         env_vars = config.get("Environment", {}).get("Variables", {})
-        self.assertIn("GITHUB_WEBHOOK_SECRET", env_vars)
+        self.assertIn("GITHUB_WEBHOOK_SECRET_ARN", env_vars)
+        self.assertNotIn("GITHUB_WEBHOOK_SECRET", env_vars)
         self.assertEqual(env_vars.get("MONITORED_BRANCH"), "main")
         self.assertIn("<IOT_ENDPOINT_PREFIX>", env_vars.get("IOT_DATA_ENDPOINT", ""))
         self.assertEqual(env_vars.get("MQTT_TOPIC"), "gitops/commits")
@@ -670,7 +713,7 @@ class TestGitHubAwsInfrastructure(unittest.TestCase):
         self.assertTrue(cfn_path.is_file(), "github-webhook-template.yaml must exist")
 
         with open(cfn_path, "r", encoding="utf-8") as f:
-            template = yaml.safe_load(f)
+            template = yaml.load(f, Loader=CfnYamlLoader)
 
         self.assertEqual(template.get("AWSTemplateFormatVersion"), "2010-09-09")
         params = template.get("Parameters", {})
