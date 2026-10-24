@@ -1,0 +1,88 @@
+```yaml
+name: GitOps Commit Light CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Python Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall -q backend tests
+
+      - name: Validate JSON configuration files
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          files = list(Path("aws").rglob("*.json"))
+          for file in files:
+              with file.open(encoding="utf-8") as f:
+                  json.load(f)
+              print(f"Valid JSON: {file}")
+
+          print(f"Validated {len(files)} JSON files.")
+          PY
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check patch formatting
+        run: git diff --check
+
+**Important:** This workflow is for testing only. It does not deploy anything to AWS, publish MQTT messages, or require AWS credentials.
+
+## Step 3: Save the workflow
+
+1. Click **Commit changes…** in the top-right corner of the editor.
+2. Use this commit message: `Add GitHub Actions CI workflow`.
+3. Select the option to commit directly to `main`, if GitHub offers that choice.
+4. Confirm by clicking **Commit changes**.
+
+This creates a new commit in your repository. It does not deploy your application.
+
+## Step 4: Check whether the tests pass
+
+After saving:
+
+1. Open the repository's **Actions** tab.
+2. Look for **GitOps Commit Light CI**.
+3. Open the latest run.
+4. Wait for the test job to finish.
+
+Interpret the result:
+
+- ✅ **Green check:** All workflow steps passed.
+- ❌ **Red cross:** A step failed. Open it and share the error with me.
+- 🟡 **Yellow indicator:** The workflow is still running or waiting.
+
+The workflow may reveal a test or configuration issue. That's useful to discover before deploying.
+
+### One important note
+
+Your earlier local test report stated that **138 tests passed**, but this GitHub workflow has not verified that result yet. The new run will test the code actually committed to GitHub.
+
+**Do Step 1 now.** Once the editor opens, you can send me a screenshot before committing if you'd like me to check that you're in the correct place.
+```
