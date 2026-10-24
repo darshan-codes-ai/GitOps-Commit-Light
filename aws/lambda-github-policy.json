@@ -1,0 +1,40 @@
+{
+  "_comment": "IAM Execution Role Policy for Dedicated GitHub Webhook Lambda. Grants least-privilege access for CloudWatch logging and AWS IoT Core publishing. Contains NO CodeCommit or SQS permissions. Replace placeholders (<REGION>, <ACCOUNT_ID>, <GITHUB_FUNCTION_NAME>) before deployment.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudWatchLogGroupCreation",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup"
+      ],
+      "Resource": "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<GITHUB_FUNCTION_NAME>"
+    },
+    {
+      "Sid": "CloudWatchLogStreamDelivery",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<GITHUB_FUNCTION_NAME>:*"
+    },
+    {
+      "Sid": "IoTCorePublishCommitNotification",
+      "Effect": "Allow",
+      "Action": [
+        "iot:Publish"
+      ],
+      "Resource": "arn:aws:iot:<REGION>:<ACCOUNT_ID>:topic/gitops/commits"
+    },
+    {
+      "Sid": "SecretsManagerGetWebhookSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:<SECRET_NAME>-*"
+    }
+  ]
+}
+

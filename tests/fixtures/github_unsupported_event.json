@@ -1,0 +1,19 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Unsupported GitHub webhook event type (e.g. issues event).",
+  "action": "opened",
+  "issue": {
+    "id": 555555555,
+    "number": 1,
+    "title": "Synthetic issue for testing",
+    "state": "open"
+  },
+  "repository": {
+    "id": 987654321,
+    "name": "GitOps-Commit-Light",
+    "full_name": "darshan-codes-ai/GitOps-Commit-Light"
+  },
+  "sender": {
+    "login": "darshan-codes-ai"
+  }
+}
+

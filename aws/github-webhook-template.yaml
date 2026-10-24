@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GitOps Commit Light - Dedicated GitHub Webhook Ingestion Infrastructure.
+  Provisions an Amazon API Gateway HTTP API (v2) with route POST /webhook/github,
+  a dedicated AWS Lambda function with runtime python3.12, least-privilege IAM execution role,
+  CloudWatch log group with 14-day retention, and AWS Secrets Manager integration.
+
+Parameters:
+  GitHubWebhookSecretArn:
+    Type: String
+    Description: >
+      ARN of the AWS Secrets Manager secret storing the GitHub webhook secret token.
+      Scoped to secretsmanager:GetSecretValue in the Lambda execution role.
+    AllowedPattern: "^arn:aws[a-zA-Z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+"
+    ConstraintDescription: Must be a valid AWS Secrets Manager secret ARN.
+
+  IoTDataEndpoint:
+    Type: String
+    Description: >
+      AWS IoT Core Data-ATS endpoint URL (e.g., https://xxxxxxxxxxxxxx-ats.iot.region.amazonaws.com).
+      Retrieved via 'aws iot describe-endpoint --endpoint-type iot:Data-ATS'.
+    AllowedPattern: "^https://[a-zA-Z0-9.-]+\\.iot\\.[a-z0-9-]+\\.amazonaws\\.com$"
+    ConstraintDescription: Must be a valid HTTPS AWS IoT ATS endpoint URL.
+
+  MqttTopic:
+    Type: String
+    Default: "gitops/commits"
+    Description: Target MQTT topic for GitOps commit light notifications.
+
+  MonitoredBranch:
+    Type: String
+    Default: "main"
+    Description: Git branch name to monitor for push events. Pushes to other branches are safely ignored.
+
+  LambdaCodeS3Bucket:
+    Type: String
+    Description: S3 bucket name containing the packaged Lambda deployment artifact (gitops-commit-light.zip).
+
+  LambdaCodeS3Key:
+    Type: String
+    Default: "gitops-commit-light.zip"
+    Description: S3 key/path of the packaged Lambda deployment artifact.
+
+Resources:
+  GitHubWebhookLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-GitHubWebhook"
+      RetentionInDays: 14
+
+  GitHubWebhookExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-GitHubExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GitOpsGitHubLeastPrivilegePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatchLogStreamDelivery
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "${GitHubWebhookLogGroup.Arn}:*"
+              - Sid: IoTCorePublishCommitNotification
+                Effect: Allow
+                Action:
+                  - iot:Publish
+                Resource: !Sub "arn:${AWS::Partition}:iot:${AWS::Region}:${AWS::AccountId}:topic/${MqttTopic}"
+              - Sid: SecretsManagerGetWebhookSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref GitHubWebhookSecretArn
+
+  GitHubWebhookFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - GitHubWebhookLogGroup
+      - GitHubWebhookExecutionRole
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-GitHubWebhook"
+      Description: GitOps Commit Light - Dedicated GitHub Webhook processor (synchronous API Gateway to IoT Core MQTT)
+      Runtime: python3.12
+      Handler: lambda_function.github_webhook_handler
+      Role: !GetAtt GitHubWebhookExecutionRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          GITHUB_WEBHOOK_SECRET_ARN: !Ref GitHubWebhookSecretArn
+          IOT_DATA_ENDPOINT: !Ref IoTDataEndpoint
+          MQTT_TOPIC: !Ref MqttTopic
+          MONITORED_BRANCH: !Ref MonitoredBranch
+
+  GitHubHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-GitHubHttpApi"
+      ProtocolType: HTTP
+      Description: GitOps Commit Light - GitHub Webhook Ingestion API
+      CorsConfiguration:
+        AllowMethods:
+          - POST
+        AllowHeaders:
+          - content-type
+          - x-github-event
+          - x-github-delivery
+          - x-hub-signature-256
+          - user-agent
+
+  GitHubApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref GitHubHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt GitHubWebhookFunction.Arn
+      PayloadFormatVersion: "2.0"
+      Description: Lambda proxy integration for GitHub webhook handler
+
+  GitHubApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref GitHubHttpApi
+      RouteKey: "POST /webhook/github"
+      AuthorizationType: NONE
+      Target: !Join ["/", ["integrations", !Ref GitHubApiIntegration]]
+
+  GitHubApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref GitHubHttpApi
+      StageName: "$default"
+      AutoDeploy: true
+      Description: Default auto-deployed stage for GitHub webhooks
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+        DetailedMetricsEnabled: true
+
+  GitHubApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GitHubWebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${GitHubHttpApi}/$default/POST/webhook/github"
+      SourceAccount: !Ref "AWS::AccountId"
+
+Outputs:
+  WebhookUrl:
+    Description: Public webhook URL to configure in GitHub repository settings (Payload URL).
+    Value: !Sub "https://${GitHubHttpApi}.execute-api.${AWS::Region}.amazonaws.com/webhook/github"
+
+  GitHubLambdaArn:
+    Description: ARN of the dedicated GitHub webhook Lambda function.
+    Value: !GetAtt GitHubWebhookFunction.Arn
+
+  HttpApiId:
+    Description: ID of the Amazon API Gateway HTTP API.
+    Value: !Ref GitHubHttpApi
+

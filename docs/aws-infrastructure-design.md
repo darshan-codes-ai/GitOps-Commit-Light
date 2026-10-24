@@ -17,11 +17,16 @@ To bridge the offline Python backend to live AWS services in the next implementa
 | [`aws/eventbridge-rule.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-rule.json) | EventBridge Rule (`put-rule`) | Filters CodeCommit repository state changes strictly for branch updates on `main`. |
 | [`aws/eventbridge-target.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-target.json) | EventBridge Target (`put-targets`) | Configures Path A Target Delivery: Lambda target, delivery retry limits (185 attempts, 24h), and Target DLQ. |
 | [`aws/eventbridge-dlq-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/eventbridge-dlq-policy.json) | SQS Queue Resource Policy (`set-queue-attributes`) | Authorizes the EventBridge service principal (`events.amazonaws.com`) to write failed target delivery events to the EventBridge DLQ. |
-| [`aws/lambda-function-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-function-config.json) | Lambda Function Config (`create-function`) | Establishes runtime settings, environment variables (`IOT_DATA_ENDPOINT`, `MQTT_TOPIC`), and enforces `lambda_function.production_lambda_handler` as the verified entry point. |
+| [`aws/lambda-function-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-function-config.json) | Lambda Function Config (`create-function`) | Establishes runtime settings, environment variables (`IOT_DATA_ENDPOINT`, `MQTT_TOPIC`), and enforces `lambda_function.production_lambda_handler` for CodeCommit. |
 | [`aws/lambda-event-invoke-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-event-invoke-config.json) | Lambda Event Invoke Config (`put-function-event-invoke-config`) | Configures Path B Asynchronous Execution: function retry limits (2 retries, 6h), and Lambda On-Failure DLQ destination. |
-| [`aws/lambda-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-policy.json) | IAM Execution Role Policy | Grants Lambda permissions to log to CloudWatch, query CodeCommit, publish to IoT Core, and write to Lambda DLQ. |
-| [`aws/lambda-resource-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-resource-policy.json) | Lambda Resource Policy (`add-permission`) | Authorizes the Amazon EventBridge service principal to invoke the Lambda function. |
+| [`aws/lambda-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-policy.json) | IAM Execution Role Policy (CodeCommit) | Grants Lambda permissions to log to CloudWatch, query CodeCommit, publish to IoT Core, and write to Lambda DLQ. |
+| [`aws/lambda-resource-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-resource-policy.json) | Lambda Resource Policy (`add-permission`) | Authorizes the Amazon EventBridge service principal to invoke the CodeCommit Lambda function. |
 | [`aws/iot-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/iot-policy.json) | AWS IoT Core Certificate Policy | Grants the physical ESP32 device permission to connect, subscribe, and receive messages (strictly no publishing). |
+| [`aws/apigateway-http-api.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/apigateway-http-api.json) | API Gateway HTTP API Specification | Declarative resource specification for HTTP API v2 route (`POST /webhook/github`), Lambda proxy integration v2.0, and stage throttling. |
+| [`aws/apigateway-lambda-permission.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/apigateway-lambda-permission.json) | Lambda Resource Policy (`add-permission`) | Authorizes Amazon API Gateway (`apigateway.amazonaws.com`) scoped strictly to `POST /webhook/github` and `<ACCOUNT_ID>`. |
+| [`aws/lambda-github-policy.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-github-policy.json) | IAM Execution Role Policy (GitHub) | Dedicated least-privilege policy granting only CloudWatch logging, IoT Core publish, and Secrets Manager read access (no CodeCommit or SQS). |
+| [`aws/lambda-github-function-config.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/lambda-github-function-config.json) | Lambda Function Config (GitHub) | Runtime settings and environment variables (`GITHUB_WEBHOOK_SECRET_ARN`, `MONITORED_BRANCH`, `IOT_DATA_ENDPOINT`), enforcing `lambda_function.github_webhook_handler`. |
+| [`aws/github-webhook-template.yaml`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/github-webhook-template.yaml) | CloudFormation Template (Authoritative Deployable Stack) | Fully parameterized, single-step deployable CloudFormation template orchestrating API Gateway v2, Lambda, IAM, and LogGroup. |
 
 ---
 
@@ -201,3 +206,189 @@ The repository includes a dedicated offline verification suite in [`tests/test_a
    - Lambda async retries comply with `0 <= retries <= 2` and `60 <= age <= 21600`.
    - Verifies EventBridge and Lambda do not share one retry counter or configuration.
    - Verifies `lambda-function-config.json` sets `Handler` to `lambda_function.production_lambda_handler`.
+
+---
+
+## 6. GitHub Webhook Architecture: API Gateway HTTP API & Dedicated Lambda
+
+To transition to GitHub as the event source while leaving the CodeCommit pipeline intact, the system introduces a dedicated synchronous ingestion path:
+
+```
+[ Developer: git push to GitHub ]
+                │
+                ▼
+      ┌──────────────────┐
+      │  GitHub.com Repo │  Generates push event payload (commit message included!)
+      └─────────┬────────┘  Signs body with HMAC-SHA256 (X-Hub-Signature-256)
+                │
+                ▼ HTTPS POST /webhook/github
+┌─────────────────────────────────┐
+│ Amazon API Gateway (HTTP API v2)│  Defined in aws/apigateway-http-api.json
+│        (Route & Stage)          │  Throttled: 50 req/sec, burst 100
+└───────────────┬─────────────────┘
+                │ Synchronous Lambda Proxy Integration (PayloadFormatVersion: "2.0")
+                ▼
+┌─────────────────────────────────┐
+│     Dedicated GitHub Lambda     │  Configured in aws/lambda-github-function-config.json
+│(github_webhook_handler entry)   │  IAM Role in aws/lambda-github-policy.json
+│                                 │
+│  1. Check GITHUB_WEBHOOK_SECRET │  Fail closed (500) if unconfigured
+│  2. Verify HMAC-SHA256 (403)    │  Constant-time check over raw bytes (handles base64)
+│  3. Filter Event & Branch (200) │  Acknowledge ping, branch-delete, non-main without publishing
+│  4. Build Schema v1 Message     │  Maps head_commit directly (zero external API calls!)
+│  5. Publish to AWS IoT Core     │  Reuses existing Boto3IotDataPublisher
+└───────────────┬─────────────────┘
+                │
+                ├────────────────────────────────────────┐
+                ▼ MQTT over TLS (gitops/commits)         ▼ Synchronous HTTP Response
+      ┌──────────────────┐                     ┌───────────────────┐
+      │   AWS IoT Core   │                     │  API Gateway HTTP │
+      │  gitops/commits  │                     │   200 OK / 502    │
+      └─────────┬────────┘                     └─────────┬─────────┘
+                │ MQTT                                   │ Delivery Status
+                ▼                                        ▼
+      ┌──────────────────┐                     ┌───────────────────┐
+      │   ESP32 Device   │                     │  GitHub Webhooks  │
+      │ (No code change) │                     │ (Green checkmark) │
+      └──────────────────┘                     └───────────────────┘
+```
+
+### 1. Dedicated GitHub Lambda vs. CodeCommit Lambda Separation
+* **CodeCommit Pipeline (`aws/lambda-function-config.json`):**
+  - Handler: `lambda_function.production_lambda_handler`
+  - Trigger: Asynchronous EventBridge state-change rule.
+  - IAM Policy: Includes `codecommit:GetCommit` and `sqs:SendMessage` for Path B DLQ.
+* **GitHub Pipeline (`aws/lambda-github-function-config.json`):**
+  - Handler: `lambda_function.github_webhook_handler`
+  - Trigger: Synchronous API Gateway HTTP API v2 (`POST /webhook/github`).
+  - IAM Policy: Strictly scoped to CloudWatch Logs and `iot:Publish`. **No CodeCommit or SQS permissions.**
+
+### 2. API Gateway HTTP API Specification (`aws/apigateway-http-api.json`)
+The file [`aws/apigateway-http-api.json`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/apigateway-http-api.json) provides a declarative specification of the required API Gateway v2 resources:
+* **Protocol:** HTTP API (API Gateway v2) for lower cost ($1.00/million calls) and reduced latency.
+* **Route:** `POST /webhook/github` with `AuthorizationType: NONE` (authentication is handled via HMAC-SHA256 signature in Lambda).
+* **Integration:** `IntegrationType: AWS_PROXY`, `PayloadFormatVersion: "2.0"`, targeting the GitHub Lambda function ARN.
+* **Stage:** `$default` with `AutoDeploy: true`.
+* **Throttling:** Default route throttling configured with `ThrottlingBurstLimit: 100` and `ThrottlingRateLimit: 50` req/sec to protect downstream services against denial-of-service spikes.
+
+#### Multi-Step AWS CLI Provisioning Sequence
+Because API Gateway HTTP APIs require creating interconnected resources, deployment via AWS CLI follows this sequence:
+```powershell
+# 1. Create HTTP API
+$apiId = (aws apigatewayv2 create-api --name "<API_NAME>" --protocol-type HTTP --query "ApiId" --output text)
+
+# 2. Create Lambda Proxy Integration (Payload v2.0)
+$integrationId = (aws apigatewayv2 create-integration --api-id $apiId --integration-type AWS_PROXY `
+    --integration-uri "arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<GITHUB_FUNCTION_NAME>" `
+    --payload-format-version "2.0" --query "IntegrationId" --output text)
+
+# 3. Create Route targeting the integration
+aws apigatewayv2 create-route --api-id $apiId --route-key "POST /webhook/github" `
+    --target "integrations/$integrationId"
+
+# 4. Create and deploy $default stage with throttling
+aws apigatewayv2 create-stage --api-id $apiId --stage-name "$default" --auto-deploy `
+    --default-route-settings "ThrottlingBurstLimit=100,ThrottlingRateLimit=50,DetailedMetricsEnabled=true"
+
+# 5. Grant API Gateway permission to invoke Lambda
+aws lambda add-permission --function-name "<GITHUB_FUNCTION_NAME>" `
+    --statement-id "AllowApiGatewayToInvokeGitHubWebhookLambda" `
+    --action "lambda:InvokeFunction" --principal "apigateway.amazonaws.com" `
+    --source-arn "arn:aws:execute-api:<REGION>:<ACCOUNT_ID>:$apiId/$default/POST/webhook/github"
+```
+
+#### Declarative CloudFormation Equivalent
+For automated single-step deployment, the equivalent CloudFormation snippet is:
+```yaml
+Resources:
+  GitHubHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: GitOpsCommitLight-GitHubApi
+      ProtocolType: HTTP
+
+  GitHubApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref GitHubHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GitHubWebhookFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  GitHubApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref GitHubHttpApi
+      RouteKey: "POST /webhook/github"
+      Target: !Join ['/', ['integrations', !Ref GitHubApiIntegration]]
+
+  GitHubApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref GitHubHttpApi
+      StageName: "$default"
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  GitHubApiLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GitHubWebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${GitHubHttpApi}/$default/POST/webhook/github"
+```
+
+### 3. Narrowly Scoped Lambda Invocation Permission (`aws/apigateway-lambda-permission.json`)
+The resource-based policy statement restricts execution strictly:
+* **Principal:** `apigateway.amazonaws.com`.
+* **Action:** `lambda:InvokeFunction`.
+* **Resource:** `arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<GITHUB_FUNCTION_NAME>`.
+* **Scoped Source ARN:** `arn:aws:execute-api:<REGION>:<ACCOUNT_ID>:<API_ID>/$default/POST/webhook/github`. This guarantees that **only** the designated API, the `$default` stage, the `POST` method, and the `/webhook/github` path can invoke the function.
+* **Source Account Condition:** `aws:SourceAccount: "<ACCOUNT_ID>"` prevents cross-account confused deputy vulnerabilities.
+
+### 4. Dedicated Least-Privilege IAM Policy (`aws/lambda-github-policy.json`)
+* **CloudWatch Logs:**
+  - `logs:CreateLogGroup` on `arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<GITHUB_FUNCTION_NAME>`.
+  - `logs:CreateLogStream`, `logs:PutLogEvents` on `arn:aws:logs:<REGION>:<ACCOUNT_ID>:log-group:/aws/lambda/<GITHUB_FUNCTION_NAME>:*`.
+  - *Note: Pre-creating the log group `/aws/lambda/<GITHUB_FUNCTION_NAME>` prior to deployment is best practice to avoid cold-start IAM races.*
+* **AWS IoT Core:**
+  - `iot:Publish` restricted strictly to `arn:aws:iot:<REGION>:<ACCOUNT_ID>:topic/gitops/commits`.
+* **AWS Secrets Manager:**
+  - `secretsmanager:GetSecretValue` on `arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:<SECRET_NAME>-*` (or specific secret ARN).
+* **Zero Extraneous Permissions:**
+  - **No `codecommit:*`:** GitHub push events embed commit metadata; no SDK queries to CodeCommit are made.
+  - **No `sqs:*`:** API Gateway integration is synchronous; dead-letter queues are not attached to synchronous proxy invocations.
+  - **No administrative wildcards (`logs:*`, `iot:*`, `secretsmanager:*`, `Resource: "*"`).**
+
+### 5. Secure Webhook Secret Provisioning (`GITHUB_WEBHOOK_SECRET` & Secrets Manager)
+* **Security Rules:**
+  - Never commit real secret strings into `aws/lambda-github-function-config.json`, CloudFormation templates, or Git repositories.
+  - Configuration files maintain token placeholders (`"<GITHUB_WEBHOOK_SECRET_PLACEHOLDER>"`, `<SECRET_NAME>`).
+* **Recommended Provisioning Architecture:**
+  1. **AWS Secrets Manager (Preferred & Default in CloudFormation Stack):**
+     - The shared webhook secret is created in AWS Secrets Manager:
+       ```powershell
+       aws secretsmanager create-secret --name "gitops-commit-light/github-webhook-secret" `
+         --secret-string "$GeneratedSecretToken"
+       ```
+     - The Lambda execution role is granted `secretsmanager:GetSecretValue` strictly on this secret's ARN.
+     - At runtime, [`github_webhook_handler`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py#L890) retrieves the secret via boto3 `secretsmanager.get_secret_value(SecretId=...)`.
+     - **In-Memory Caching:** To minimize Secrets Manager latency and API costs, the secret is cached in-memory across warm Lambda invocations. Calls to Secrets Manager occur only during container cold starts.
+     - **Cost Consideration:** AWS Secrets Manager costs **$0.40 per secret per month** and **$0.05 per 10,000 API calls**. Because warm containers cache the secret, API call volume is negligible (< $0.01/month for typical commit rates).
+  2. **Direct Environment Variable Injection (Low-Cost Alternative):**
+     - If avoiding Secrets Manager's $0.40/month cost, the secret can be injected as a masked environment variable (`GITHUB_WEBHOOK_SECRET`) during CI/CD deployment or AWS CLI `update-function-configuration`. The code supports both methods seamlessly.
+
+### 6. Missing Delivery ID Enforcement
+* **Enforced Behavior:**
+  - [`github_webhook_handler`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/backend/lambda/lambda_function.py#L1170) strictly requires `X-GitHub-Delivery`.
+  - If missing or empty, it returns **HTTP 400 Bad Request** (`{"status": "error", "message": "Missing required X-GitHub-Delivery header."}`) and **publishes zero MQTT messages**.
+  - Fallback UUID generation has been removed to enforce strict GitHub webhook contract compliance.
+
+### 7. Authoritative vs. Illustrative Template Hierarchy
+* **Deployable CloudFormation Stack ([`aws/github-webhook-template.yaml`](file:///c:/Users/Darsh/OneDrive/Desktop/GitOps%20Commit%20Light/aws/github-webhook-template.yaml)):**
+  - **Authoritative Deployable Template.** Contains the complete, parameterized, single-step AWS CloudFormation template ready for deployment with `aws cloudformation deploy`.
+* **Modular Specifications (`aws/apigateway-*.json`, `aws/lambda-github-*.json`):**
+  - **Authoritative Declarative Definitions** for granular, multi-step AWS CLI scripting or microservice orchestration. They provide exact schema mappings and IAM policy definitions decoupled from CloudFormation syntax.

@@ -1,0 +1,21 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: GitHub push event representing branch deletion (deleted=true, after=all zeros).",
+  "ref": "refs/heads/feature-temporary",
+  "before": "0123456789abcdef0123456789abcdef01234567",
+  "after": "0000000000000000000000000000000000000000",
+  "created": false,
+  "deleted": true,
+  "forced": false,
+  "base_ref": null,
+  "repository": {
+    "id": 987654321,
+    "name": "GitOps-Commit-Light",
+    "full_name": "darshan-codes-ai/GitOps-Commit-Light"
+  },
+  "pusher": {
+    "name": "darshan-codes-ai"
+  },
+  "commits": [],
+  "head_commit": null
+}
+

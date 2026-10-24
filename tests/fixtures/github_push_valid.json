@@ -1,0 +1,71 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Valid GitHub push webhook payload for branch refs/heads/main. Synthetic placeholder data only.",
+  "ref": "refs/heads/main",
+  "before": "6113728f27ae82c7b1a1a7a8d95d27086e939fa0",
+  "after": "0123456789abcdef0123456789abcdef01234567",
+  "repository": {
+    "id": 987654321,
+    "name": "GitOps-Commit-Light",
+    "full_name": "darshan-codes-ai/GitOps-Commit-Light",
+    "private": false,
+    "html_url": "https://github.com/darshan-codes-ai/GitOps-Commit-Light"
+  },
+  "pusher": {
+    "name": "darshan-codes-ai",
+    "email": "synthetic-pusher@example.com"
+  },
+  "sender": {
+    "login": "darshan-codes-ai",
+    "id": 12345678
+  },
+  "created": false,
+  "deleted": false,
+  "forced": false,
+  "base_ref": null,
+  "compare": "https://github.com/darshan-codes-ai/GitOps-Commit-Light/compare/6113728f27ae...0123456789ab",
+  "commits": [
+    {
+      "id": "0123456789abcdef0123456789abcdef01234567",
+      "tree_id": "abcdef0123456789abcdef0123456789abcdef01",
+      "distinct": true,
+      "message": "feat: add GitHub webhook support for commit light",
+      "timestamp": "2026-10-23T11:00:00Z",
+      "url": "https://github.com/darshan-codes-ai/GitOps-Commit-Light/commit/0123456789abcdef0123456789abcdef01234567",
+      "author": {
+        "name": "Darshan Kumar",
+        "email": "synthetic-author@example.com"
+      },
+      "committer": {
+        "name": "Darshan Kumar",
+        "email": "synthetic-author@example.com"
+      },
+      "added": [],
+      "removed": [],
+      "modified": [
+        "README.md"
+      ]
+    }
+  ],
+  "head_commit": {
+    "id": "0123456789abcdef0123456789abcdef01234567",
+    "tree_id": "abcdef0123456789abcdef0123456789abcdef01",
+    "distinct": true,
+    "message": "feat: add GitHub webhook support for commit light",
+    "timestamp": "2026-10-23T11:00:00Z",
+    "url": "https://github.com/darshan-codes-ai/GitOps-Commit-Light/commit/0123456789abcdef0123456789abcdef01234567",
+    "author": {
+      "name": "Darshan Kumar",
+      "email": "synthetic-author@example.com"
+    },
+    "committer": {
+      "name": "Darshan Kumar",
+      "email": "synthetic-author@example.com"
+    },
+    "added": [],
+    "removed": [],
+    "modified": [
+      "README.md"
+    ]
+  }
+}
+

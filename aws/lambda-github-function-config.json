@@ -1,0 +1,20 @@
+{
+  "_comment": "AWS Lambda Function Configuration for dedicated GitHub Webhook processor. Defines runtime, handler (lambda_function.github_webhook_handler), and environment variables. Replace placeholders (<REGION>, <ACCOUNT_ID>, <GITHUB_FUNCTION_NAME>, <EXECUTION_ROLE_NAME>, <IOT_ENDPOINT_PREFIX>, <GITHUB_WEBHOOK_SECRET_PLACEHOLDER>) before deployment.",
+  "FunctionName": "<GITHUB_FUNCTION_NAME>",
+  "Runtime": "python3.12",
+  "Handler": "lambda_function.github_webhook_handler",
+  "Role": "arn:aws:iam::<ACCOUNT_ID>:role/<EXECUTION_ROLE_NAME>",
+  "Description": "GitOps Commit Light - GitHub Webhook to AWS IoT Core MQTT publisher",
+  "Timeout": 10,
+  "MemorySize": 128,
+  "Environment": {
+    "Variables": {
+      "GITHUB_WEBHOOK_SECRET": "<GITHUB_WEBHOOK_SECRET_PLACEHOLDER>",
+      "GITHUB_WEBHOOK_SECRET_ARN": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:<SECRET_NAME>-*",
+      "MONITORED_BRANCH": "main",
+      "IOT_DATA_ENDPOINT": "https://<IOT_ENDPOINT_PREFIX>-ats.iot.<REGION>.amazonaws.com",
+      "MQTT_TOPIC": "gitops/commits"
+    }
+  }
+}
+

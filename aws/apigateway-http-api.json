@@ -1,0 +1,44 @@
+{
+  "_format": "AWS API Gateway v2 HTTP API Declarative Definition",
+  "_comment": "Declarative configuration template for GitOps Commit Light GitHub Webhook HTTP API. Note: This file documents the required AWS API Gateway v2 resources (API, Integration, Route, Stage) and CLI mapping. Replace placeholders (<REGION>, <ACCOUNT_ID>, <GITHUB_FUNCTION_NAME>, <API_NAME>) before deployment.",
+  "Api": {
+    "Name": "<API_NAME>",
+    "ProtocolType": "HTTP",
+    "Description": "GitOps Commit Light - GitHub Webhook Ingestion API",
+    "CorsConfiguration": {
+      "AllowMethods": [
+        "POST"
+      ],
+      "AllowHeaders": [
+        "content-type",
+        "x-github-event",
+        "x-github-delivery",
+        "x-hub-signature-256",
+        "user-agent"
+      ]
+    }
+  },
+  "Route": {
+    "RouteKey": "POST /webhook/github",
+    "AuthorizationType": "NONE",
+    "Target": "integrations/<INTEGRATION_ID>"
+  },
+  "Integration": {
+    "IntegrationType": "AWS_PROXY",
+    "IntegrationMethod": "POST",
+    "IntegrationUri": "arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<GITHUB_FUNCTION_NAME>",
+    "PayloadFormatVersion": "2.0",
+    "Description": "Lambda proxy integration for GitHub push webhook handler"
+  },
+  "Stage": {
+    "StageName": "$default",
+    "AutoDeploy": true,
+    "Description": "Default auto-deployed stage",
+    "DefaultRouteSettings": {
+      "ThrottlingBurstLimit": 100,
+      "ThrottlingRateLimit": 50,
+      "DetailedMetricsEnabled": true
+    }
+  }
+}
+

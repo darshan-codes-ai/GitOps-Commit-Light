@@ -1,0 +1,27 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: GitHub push event to a non-monitored feature branch (refs/heads/feature/oled-display).",
+  "ref": "refs/heads/feature/oled-display",
+  "before": "6113728f27ae82c7b1a1a7a8d95d27086e939fa0",
+  "after": "fedcba9876543210fedcba9876543210fedcba98",
+  "created": true,
+  "deleted": false,
+  "forced": false,
+  "repository": {
+    "id": 987654321,
+    "name": "GitOps-Commit-Light",
+    "full_name": "darshan-codes-ai/GitOps-Commit-Light"
+  },
+  "commits": [
+    {
+      "id": "fedcba9876543210fedcba9876543210fedcba98",
+      "message": "wip: experimental oled animation",
+      "timestamp": "2026-10-23T11:10:00Z"
+    }
+  ],
+  "head_commit": {
+    "id": "fedcba9876543210fedcba9876543210fedcba98",
+    "message": "wip: experimental oled animation",
+    "timestamp": "2026-10-23T11:10:00Z"
+  }
+}
+

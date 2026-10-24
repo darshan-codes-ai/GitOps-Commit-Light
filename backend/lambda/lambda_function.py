@@ -16,8 +16,11 @@ Design Principles:
 from __future__ import annotations
 
 import abc
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import json
 import os
 from typing import Any, Callable, Dict, Optional, Tuple, Union
@@ -737,5 +740,510 @@ def production_lambda_handler(
         publisher=publisher,
         mqtt_topic=target_topic,
         raise_on_retryable=True,
+    )
+
+
+# ==============================================================================
+# Amazon API Gateway & GitHub Webhook Integration
+# ==============================================================================
+
+def _build_api_gateway_response(
+    status_code: int,
+    body_dict: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Format a synchronous response dictionary conforming to API Gateway Lambda Proxy integration.
+
+    Args:
+        status_code: HTTP status code (e.g. 200, 400, 401, 403, 500, 502).
+        body_dict: JSON-serializable dictionary representing the response body.
+
+    Returns:
+        Structured proxy response dictionary with statusCode, headers, and string body.
+    """
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+        },
+        "body": json.dumps(body_dict),
+    }
+
+
+def verify_github_signature(
+    secret: str,
+    raw_body_bytes: bytes,
+    signature_header: Optional[str],
+) -> bool:
+    """
+    Verify GitHub HMAC-SHA256 signature using constant-time digest comparison.
+
+    Security Notes:
+        - Never logs the secret, signature, or sensitive payload bytes.
+        - Uses hmac.compare_digest() to mitigate timing side-channel attacks.
+        - Expects signature_header formatted as 'sha256=<64-char-hex-digest>'.
+
+    Args:
+        secret: Webhook shared secret configured in GitHub.
+        raw_body_bytes: Raw UTF-8 bytes of the incoming HTTP request payload.
+        signature_header: The value of the incoming X-Hub-Signature-256 header.
+
+    Returns:
+        True if valid; False if invalid, missing, or malformed.
+    """
+    if not secret or not isinstance(secret, str) or not secret.strip():
+        return False
+    if not signature_header or not isinstance(signature_header, str) or not signature_header.strip():
+        return False
+
+    clean_header = signature_header.strip()
+    if not clean_header.startswith("sha256="):
+        return False
+
+    expected_digest = hmac.new(
+        key=secret.strip().encode("utf-8"),
+        msg=raw_body_bytes,
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    expected_sig = f"sha256={expected_digest}"
+
+    return hmac.compare_digest(expected_sig, clean_header)
+
+
+_WEBHOOK_SECRET_CACHE: Dict[str, str] = {}
+
+
+def _clear_webhook_secret_cache() -> None:
+    """Clear in-memory webhook secret cache (for testing and credential rotation)."""
+    _WEBHOOK_SECRET_CACHE.clear()
+
+
+def _get_github_webhook_secret(
+    secret_param: Any = _UNSET,
+    secretsmanager_client: Optional[Any] = None,
+) -> Optional[str]:
+    """
+    Resolve the GitHub webhook secret using the following priority:
+    1. Explicit parameter (if supplied as a non-empty string).
+    2. GITHUB_WEBHOOK_SECRET environment variable (plaintext secret).
+    3. AWS Secrets Manager using GITHUB_WEBHOOK_SECRET_ARN or SECRETS_MANAGER_SECRET_ID.
+       - Caches retrieved secret in-memory across warm Lambda invocations.
+    4. Returns None if unconfigured or retrieval fails (enforcing fail-closed).
+
+    Security:
+        - Never logs the secret value or ARN.
+        - Fails closed on any error or missing secret.
+    """
+    # 1. Parameter override (primarily for test dependency injection)
+    if secret_param is not _UNSET and secret_param is not None:
+        if isinstance(secret_param, str) and secret_param.strip():
+            return secret_param.strip()
+        return None
+
+    # 2. Direct environment variable (plaintext)
+    env_secret = os.environ.get("GITHUB_WEBHOOK_SECRET")
+    if env_secret and isinstance(env_secret, str) and env_secret.strip():
+        return env_secret.strip()
+
+    # 3. AWS Secrets Manager resolution
+    secret_id = (
+        os.environ.get("GITHUB_WEBHOOK_SECRET_ARN")
+        or os.environ.get("SECRETS_MANAGER_SECRET_ID")
+    )
+    if not secret_id or not isinstance(secret_id, str) or not secret_id.strip():
+        return None
+
+    clean_secret_id = secret_id.strip()
+    if clean_secret_id in _WEBHOOK_SECRET_CACHE:
+        return _WEBHOOK_SECRET_CACHE[clean_secret_id]
+
+    try:
+        if secretsmanager_client is not None:
+            sm = secretsmanager_client
+        else:
+            import boto3
+            region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+            sm = boto3.client("secretsmanager", region_name=region) if region else boto3.client("secretsmanager")
+
+        response = sm.get_secret_value(SecretId=clean_secret_id)
+        secret_value = response.get("SecretString")
+        if not secret_value or not isinstance(secret_value, str) or not secret_value.strip():
+            return None
+
+        clean_val = secret_value.strip()
+        # Parse if stored as a JSON object: {"GITHUB_WEBHOOK_SECRET": "..."}
+        if clean_val.startswith("{") and clean_val.endswith("}"):
+            try:
+                parsed = json.loads(clean_val)
+                if isinstance(parsed, dict):
+                    extracted = (
+                        parsed.get("GITHUB_WEBHOOK_SECRET")
+                        or parsed.get("webhook_secret")
+                        or parsed.get("secret")
+                    )
+                    if extracted and isinstance(extracted, str) and extracted.strip():
+                        clean_val = extracted.strip()
+            except Exception:
+                pass
+
+        _WEBHOOK_SECRET_CACHE[clean_secret_id] = clean_val
+        return clean_val
+    except Exception:
+        return None
+
+
+def github_webhook_handler(
+    event: Dict[str, Any],
+    context: Any = None,
+    publisher: Any = _UNSET,
+    secret: Optional[str] = _UNSET,
+    mqtt_topic: Optional[str] = None,
+    monitored_branch: Optional[str] = None,
+    secretsmanager_client: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Entry point for GitHub push webhooks routed through Amazon API Gateway (HTTP API v2).
+
+    Request Flow:
+        GitHub -> API Gateway -> github_webhook_handler -> AWS IoT Core MQTT (gitops/commits)
+
+    Security & Validation Pipeline:
+        1. Resolve webhook secret from parameter or 'GITHUB_WEBHOOK_SECRET' environment variable.
+           Fails closed with HTTP 500 if unconfigured.
+        2. Normalize headers case-insensitively.
+        3. Validate existence of 'X-Hub-Signature-256'. Returns HTTP 401 if missing.
+        4. Decode body (supporting API Gateway 'isBase64Encoded: true').
+        5. Verify HMAC-SHA256 signature with constant-time comparison. Returns HTTP 403 on mismatch.
+        6. Filter GitHub event type ('X-GitHub-Event'):
+           - 'ping': Acknowledged with HTTP 200 without publishing.
+           - non-'push' types: Acknowledged with HTTP 200 without publishing.
+        7. Parse and validate JSON push event payload:
+           - Branch deletion (deleted=True or after=all zeros): Acknowledged with HTTP 200 without publishing.
+           - Non-monitored branches: Acknowledged with HTTP 200 without publishing.
+           - Missing head_commit: Acknowledged with HTTP 200 without publishing.
+           - Malformed schema: Returns HTTP 400 without publishing.
+        8. Construct Schema v1 notification payload:
+           {
+               "schemaVersion": 1,
+               "eventId": "<delivery-guid>",
+               "repository": "<repo-name>",
+               "branch": "<branch-name>",
+               "commitId": "<commit-sha>",
+               "message": "<commit-message>",
+               "timestamp": "<iso-8601>"
+           }
+        9. Publish payload to target MQTT topic via MQTTPublisher.
+           - Returns HTTP 200 on successful publishing.
+           - Returns HTTP 502 on transient publisher failure to trigger GitHub webhook redelivery.
+
+    Returns:
+        Structured API Gateway proxy response dictionary (statusCode, headers, body).
+    """
+    # 1. Resolve secret & fail closed if unconfigured or retrieval fails
+    webhook_secret = _get_github_webhook_secret(
+        secret_param=secret,
+        secretsmanager_client=secretsmanager_client,
+    )
+    if not webhook_secret:
+        return _build_api_gateway_response(
+            500,
+            {
+                "status": "error",
+                "message": "Server configuration error: GITHUB_WEBHOOK_SECRET is not configured or could not be retrieved.",
+            },
+        )
+    clean_secret = webhook_secret.strip()
+
+    # 2. Normalize headers case-insensitively
+    raw_headers = event.get("headers") or {}
+    if not isinstance(raw_headers, dict):
+        raw_headers = {}
+    headers = {str(k).lower(): str(v) for k, v in raw_headers.items()}
+
+    # 3. Check signature header
+    signature_header = headers.get("x-hub-signature-256")
+    if not signature_header or not signature_header.strip():
+        return _build_api_gateway_response(
+            401,
+            {
+                "status": "error",
+                "message": "Missing required X-Hub-Signature-256 header.",
+            },
+        )
+
+    # 4. Extract and decode body bytes
+    raw_body = event.get("body")
+    is_b64 = bool(event.get("isBase64Encoded", False))
+    if raw_body is None:
+        raw_body_bytes = b""
+    elif is_b64:
+        try:
+            raw_body_bytes = base64.b64decode(raw_body)
+        except Exception:
+            return _build_api_gateway_response(
+                400,
+                {
+                    "status": "error",
+                    "message": "Malformed base64 request body.",
+                },
+            )
+    elif isinstance(raw_body, bytes):
+        raw_body_bytes = raw_body
+    elif isinstance(raw_body, str):
+        raw_body_bytes = raw_body.encode("utf-8")
+    else:
+        try:
+            raw_body_bytes = json.dumps(raw_body).encode("utf-8")
+        except Exception:
+            return _build_api_gateway_response(
+                400,
+                {
+                    "status": "error",
+                    "message": "Invalid request body format.",
+                },
+            )
+
+    # 5. Verify HMAC-SHA256 signature
+    if not verify_github_signature(clean_secret, raw_body_bytes, signature_header):
+        return _build_api_gateway_response(
+            403,
+            {
+                "status": "error",
+                "message": "Invalid X-Hub-Signature-256 signature.",
+            },
+        )
+
+    # 6. Filter GitHub event type
+    event_type = headers.get("x-github-event", "").strip().lower()
+    if event_type == "ping":
+        return _build_api_gateway_response(
+            200,
+            {
+                "status": "success",
+                "message": "Ping received successfully.",
+            },
+        )
+
+    if event_type != "push":
+        return _build_api_gateway_response(
+            200,
+            {
+                "status": "ignored",
+                "reason": f"Unsupported event type '{event_type}'. Only 'push' is processed for commit notifications.",
+            },
+        )
+
+    # 7. Parse JSON body
+    try:
+        payload_dict = json.loads(raw_body_bytes.decode("utf-8"))
+    except Exception:
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Malformed JSON payload.",
+            },
+        )
+
+    if not isinstance(payload_dict, dict):
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "JSON body must be an object.",
+            },
+        )
+
+    # 8. Push event validation: branch deletion
+    if (
+        payload_dict.get("deleted", False) is True
+        or payload_dict.get("after") == "0000000000000000000000000000000000000000"
+    ):
+        return _build_api_gateway_response(
+            200,
+            {
+                "status": "ignored",
+                "reason": "Branch deletion ignored.",
+            },
+        )
+
+    # 9. Push event validation: monitored branch check
+    target_branch = (
+        monitored_branch
+        if monitored_branch is not None
+        else os.environ.get("MONITORED_BRANCH", "main")
+    )
+    ref = payload_dict.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Missing or invalid 'ref' in push payload.",
+            },
+        )
+    clean_ref = ref.strip()
+    branch_name = (
+        clean_ref.replace("refs/heads/", "")
+        if clean_ref.startswith("refs/heads/")
+        else clean_ref
+    )
+    if branch_name != target_branch:
+        return _build_api_gateway_response(
+            200,
+            {
+                "status": "ignored",
+                "reason": f"Push to non-monitored branch '{branch_name}' ignored (monitored: '{target_branch}').",
+            },
+        )
+
+    # 10. Push event validation: repository check
+    repo_info = payload_dict.get("repository")
+    if not isinstance(repo_info, dict):
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Missing or invalid 'repository' in push payload.",
+            },
+        )
+    repo_name = repo_info.get("name")
+    if not isinstance(repo_name, str) or not repo_name.strip():
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Missing or invalid 'repository.name' in push payload.",
+            },
+        )
+    repo_name = repo_name.strip()
+
+    # 11. Push event validation: head_commit check
+    head_commit = payload_dict.get("head_commit")
+    if head_commit is None:
+        return _build_api_gateway_response(
+            200,
+            {
+                "status": "ignored",
+                "reason": "Push payload contains no head_commit (empty push or tag).",
+            },
+        )
+    if not isinstance(head_commit, dict):
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Invalid 'head_commit' format in push payload.",
+            },
+        )
+
+    commit_id = head_commit.get("id")
+    if not isinstance(commit_id, str) or not commit_id.strip():
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Missing or invalid 'head_commit.id'.",
+            },
+        )
+    commit_id = commit_id.strip()
+
+    raw_message = head_commit.get("message")
+    if not isinstance(raw_message, str) or not raw_message.strip():
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Missing or empty 'head_commit.message'.",
+            },
+        )
+    commit_message = raw_message.strip()
+
+    raw_timestamp = head_commit.get("timestamp")
+    if isinstance(raw_timestamp, str) and raw_timestamp.strip():
+        timestamp = raw_timestamp.strip()
+    else:
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 12. Delivery GUID (for eventId) - strictly required for push events
+    raw_delivery_id = headers.get("x-github-delivery")
+    if not isinstance(raw_delivery_id, str) or not raw_delivery_id.strip():
+        return _build_api_gateway_response(
+            400,
+            {
+                "status": "error",
+                "message": "Missing required X-GitHub-Delivery header.",
+            },
+        )
+    event_id = raw_delivery_id.strip()
+
+    # 13. Construct Schema v1 Notification Payload
+    notification_payload = {
+        "schemaVersion": SCHEMA_VERSION,
+        "eventId": event_id,
+        "repository": repo_name,
+        "branch": branch_name,
+        "commitId": commit_id,
+        "message": commit_message,
+        "timestamp": timestamp,
+    }
+
+    # 14. MQTT Publication
+    target_topic = (
+        mqtt_topic
+        if mqtt_topic is not None
+        else os.environ.get("MQTT_TOPIC", DEFAULT_MQTT_TOPIC)
+    )
+
+    if publisher is _UNSET:
+        target_publisher: Optional[MQTTPublisher] = Boto3IotDataPublisher()
+    else:
+        target_publisher = publisher
+
+    if target_publisher is not None:
+        try:
+            publish_success = target_publisher.publish(topic=target_topic, payload=notification_payload)
+            if publish_success is not True:
+                return _build_api_gateway_response(
+                    502,
+                    {
+                        "status": "error",
+                        "message": f"MQTT publisher rejected delivery to topic '{target_topic}'.",
+                    },
+                )
+        except TransientMQTTPublishError as err:
+            return _build_api_gateway_response(
+                502,
+                {
+                    "status": "error",
+                    "message": f"Transient error publishing to MQTT: {err}",
+                },
+            )
+        except PermanentMQTTPublishError as err:
+            return _build_api_gateway_response(
+                500,
+                {
+                    "status": "error",
+                    "message": f"Permanent error publishing to MQTT: {err}",
+                },
+            )
+        except Exception as err:
+            return _build_api_gateway_response(
+                502,
+                {
+                    "status": "error",
+                    "message": f"Unexpected error publishing to MQTT: {err}",
+                },
+            )
+
+    return _build_api_gateway_response(
+        200,
+        {
+            "status": "success",
+            "published": True if target_publisher is not None else False,
+            "topic": target_topic,
+            "eventId": event_id,
+            "payload": notification_payload,
+        },
     )
 

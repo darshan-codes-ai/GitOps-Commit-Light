@@ -1,0 +1,7 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: Malformed GitHub push payload missing required fields (no ref, no repository).",
+  "before": "6113728f27ae82c7b1a1a7a8d95d27086e939fa0",
+  "after": "0123456789abcdef0123456789abcdef01234567",
+  "commits": []
+}
+

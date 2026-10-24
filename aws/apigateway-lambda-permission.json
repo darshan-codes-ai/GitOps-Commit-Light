@@ -1,0 +1,24 @@
+{
+  "_comment": "Lambda Resource-Based Policy statement granting Amazon API Gateway permission to invoke the GitHub Lambda function. Used with 'aws lambda add-permission' or CloudFormation. Replace placeholders (<REGION>, <ACCOUNT_ID>, <API_ID>, <GITHUB_FUNCTION_NAME>) before deployment.",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowApiGatewayToInvokeGitHubWebhookLambda",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "apigateway.amazonaws.com"
+      },
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:<REGION>:<ACCOUNT_ID>:function:<GITHUB_FUNCTION_NAME>",
+      "Condition": {
+        "ArnLike": {
+          "AWS:SourceArn": "arn:aws:execute-api:<REGION>:<ACCOUNT_ID>:<API_ID>/$default/POST/webhook/github"
+        },
+        "StringEquals": {
+          "aws:SourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    }
+  ]
+}
+

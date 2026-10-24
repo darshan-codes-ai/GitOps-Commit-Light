@@ -1,0 +1,29 @@
+{
+  "_comment": "SYNTHETIC EXAMPLE: GitHub webhook ping event sent upon webhook registration.",
+  "zen": "Encourage flow.",
+  "hook_id": 123456789,
+  "hook": {
+    "type": "Repository",
+    "id": 123456789,
+    "name": "web",
+    "active": true,
+    "events": [
+      "push"
+    ],
+    "config": {
+      "content_type": "json",
+      "insecure_ssl": "0",
+      "url": "https://example.execute-api.us-east-1.amazonaws.com/webhook/github"
+    }
+  },
+  "repository": {
+    "id": 987654321,
+    "name": "GitOps-Commit-Light",
+    "full_name": "darshan-codes-ai/GitOps-Commit-Light"
+  },
+  "sender": {
+    "login": "darshan-codes-ai",
+    "id": 12345678
+  }
+}
+

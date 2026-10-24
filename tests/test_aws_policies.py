@@ -39,6 +39,7 @@ import json
 from pathlib import Path
 import re
 import unittest
+import yaml
 
 AWS_DIR = Path(__file__).resolve().parent.parent / "aws"
 
@@ -56,6 +57,10 @@ class TestAwsConfigurationJson(unittest.TestCase):
         "lambda-policy.json",
         "lambda-resource-policy.json",
         "iot-policy.json",
+        "apigateway-http-api.json",
+        "apigateway-lambda-permission.json",
+        "lambda-github-policy.json",
+        "lambda-github-function-config.json",
     ]
 
     def test_all_expected_files_exist(self):
@@ -91,21 +96,21 @@ class TestAwsConfigurationJson(unittest.TestCase):
             "AKIA",  # AWS Access Key ID prefix
         ]
 
-        for json_file in AWS_DIR.glob("*.json"):
-            content = json_file.read_text(encoding="utf-8")
+        for template_file in list(AWS_DIR.glob("*.json")) + list(AWS_DIR.glob("*.yaml")):
+            content = template_file.read_text(encoding="utf-8")
 
             matches = account_id_pattern.findall(content)
             self.assertEqual(
                 matches,
                 [],
-                f"Hardcoded 12-digit AWS account ID found in {json_file.name}: {matches}",
+                f"Hardcoded 12-digit AWS account ID found in {template_file.name}: {matches}",
             )
 
             for indicator in secret_indicators:
                 self.assertNotIn(
                     indicator,
                     content,
-                    f"Credential indicator '{indicator}' detected in {json_file.name}",
+                    f"Credential indicator '{indicator}' detected in {template_file.name}",
                 )
 
             # Templates containing ARNs or account IDs must use <ACCOUNT_ID> placeholder
@@ -541,6 +546,203 @@ class TestAsynchronousRetryAndFailureRecovery(unittest.TestCase):
             "Lambda runtime must be Python 3.x",
         )
         self.assertIn("<ACCOUNT_ID>", func_config.get("Role", ""))
+
+
+class TestGitHubAwsInfrastructure(unittest.TestCase):
+    """Test offline configuration contracts for GitHub Webhook + API Gateway infrastructure."""
+
+    def test_github_lambda_function_config(self):
+        """Verify lambda-github-function-config.json specifies github_webhook_handler and env vars."""
+        with open(AWS_DIR / "lambda-github-function-config.json", "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        self.assertEqual(
+            config.get("Handler"),
+            "lambda_function.github_webhook_handler",
+            "GitHub Lambda must configure github_webhook_handler as entry point",
+        )
+        self.assertTrue(
+            config.get("Runtime", "").startswith("python3."),
+            "GitHub Lambda runtime must be Python 3.x",
+        )
+        self.assertIn("<ACCOUNT_ID>", config.get("Role", ""))
+
+        env_vars = config.get("Environment", {}).get("Variables", {})
+        self.assertIn("GITHUB_WEBHOOK_SECRET", env_vars)
+        self.assertEqual(env_vars.get("MONITORED_BRANCH"), "main")
+        self.assertIn("<IOT_ENDPOINT_PREFIX>", env_vars.get("IOT_DATA_ENDPOINT", ""))
+        self.assertEqual(env_vars.get("MQTT_TOPIC"), "gitops/commits")
+
+    def test_apigateway_http_api_template(self):
+        """Verify apigateway-http-api.json route, proxy integration v2.0, and stage throttling."""
+        with open(AWS_DIR / "apigateway-http-api.json", "r", encoding="utf-8") as f:
+            api_spec = json.load(f)
+
+        # Route check
+        route = api_spec.get("Route", {})
+        self.assertEqual(route.get("RouteKey"), "POST /webhook/github")
+
+        # Integration check
+        integration = api_spec.get("Integration", {})
+        self.assertEqual(integration.get("IntegrationType"), "AWS_PROXY")
+        self.assertEqual(integration.get("PayloadFormatVersion"), "2.0")
+        self.assertIn("<GITHUB_FUNCTION_NAME>", integration.get("IntegrationUri", ""))
+
+        # Stage and throttling check
+        stage = api_spec.get("Stage", {})
+        self.assertEqual(stage.get("StageName"), "$default")
+        self.assertTrue(stage.get("AutoDeploy"))
+        throttle = stage.get("DefaultRouteSettings", {})
+        self.assertGreater(throttle.get("ThrottlingBurstLimit", 0), 0)
+        self.assertGreater(throttle.get("ThrottlingRateLimit", 0), 0)
+
+    def test_apigateway_lambda_permission_scoping(self):
+        """Verify apigateway-lambda-permission.json is narrowly scoped to HTTP route and account."""
+        with open(AWS_DIR / "apigateway-lambda-permission.json", "r", encoding="utf-8") as f:
+            policy = json.load(f)
+
+        statements = policy.get("Statement", [])
+        self.assertEqual(len(statements), 1)
+        stmt = statements[0]
+
+        self.assertEqual(stmt.get("Effect"), "Allow")
+        self.assertEqual(stmt.get("Action"), "lambda:InvokeFunction")
+        self.assertEqual(stmt.get("Principal", {}).get("Service"), "apigateway.amazonaws.com")
+        self.assertIn("<GITHUB_FUNCTION_NAME>", stmt.get("Resource", ""))
+
+        condition = stmt.get("Condition", {})
+        source_arn = condition.get("ArnLike", {}).get("AWS:SourceArn", "")
+        self.assertIn("POST/webhook/github", source_arn)
+        self.assertIn("<API_ID>", source_arn)
+        self.assertEqual(condition.get("StringEquals", {}).get("aws:SourceAccount"), "<ACCOUNT_ID>")
+
+    def test_github_lambda_policy_least_privilege(self):
+        """Verify lambda-github-policy.json grants only logs and IoT publish without CodeCommit or SQS."""
+        with open(AWS_DIR / "lambda-github-policy.json", "r", encoding="utf-8") as f:
+            policy = json.load(f)
+
+        statements = policy.get("Statement", [])
+        all_actions = []
+        all_resources = []
+        for stmt in statements:
+            actions = stmt.get("Action", [])
+            if isinstance(actions, str):
+                actions = [actions]
+            all_actions.extend(actions)
+            res = stmt.get("Resource", [])
+            if isinstance(res, str):
+                res = [res]
+            all_resources.extend(res)
+
+        # Must contain IoT publish on gitops/commits
+        self.assertIn("iot:Publish", all_actions)
+        self.assertTrue(
+            any("topic/gitops/commits" in r for r in all_resources),
+            "Must restrict iot:Publish to topic/gitops/commits",
+        )
+
+        # Must contain CloudWatch logging
+        self.assertIn("logs:CreateLogStream", all_actions)
+        self.assertIn("logs:PutLogEvents", all_actions)
+
+        # Must contain Secrets Manager get_secret_value
+        self.assertIn("secretsmanager:GetSecretValue", all_actions)
+        self.assertTrue(
+            any("arn:aws:secretsmanager:" in r for r in all_resources),
+            "Must restrict secretsmanager:GetSecretValue to secret ARN",
+        )
+
+        # Must strictly omit CodeCommit, SQS, and wildcard permissions
+        for act in all_actions:
+            self.assertFalse(act.startswith("codecommit:"), f"Must not grant CodeCommit action: {act}")
+            self.assertFalse(act.startswith("sqs:"), f"Must not grant SQS action: {act}")
+            self.assertNotEqual(act, "*")
+            self.assertNotEqual(act, "logs:*")
+            self.assertNotEqual(act, "iot:*")
+            self.assertNotEqual(act, "secretsmanager:*")
+
+        for res in all_resources:
+            self.assertNotEqual(res, "*", "Resource wildcard '*' is not permitted in least-privilege policy")
+
+    def test_cloudformation_template_structure_and_consistency(self):
+        """Verify github-webhook-template.yaml parses, has valid resources, parameters, and routes."""
+        cfn_path = AWS_DIR / "github-webhook-template.yaml"
+        self.assertTrue(cfn_path.is_file(), "github-webhook-template.yaml must exist")
+
+        with open(cfn_path, "r", encoding="utf-8") as f:
+            template = yaml.safe_load(f)
+
+        self.assertEqual(template.get("AWSTemplateFormatVersion"), "2010-09-09")
+        params = template.get("Parameters", {})
+        self.assertIn("GitHubWebhookSecretArn", params)
+        self.assertIn("IoTDataEndpoint", params)
+        self.assertIn("MqttTopic", params)
+        self.assertIn("MonitoredBranch", params)
+        self.assertIn("LambdaCodeS3Bucket", params)
+        self.assertIn("LambdaCodeS3Key", params)
+
+        resources = template.get("Resources", {})
+        # Log group
+        self.assertIn("GitHubWebhookLogGroup", resources)
+        self.assertEqual(resources["GitHubWebhookLogGroup"].get("Type"), "AWS::Logs::LogGroup")
+
+        # IAM role
+        self.assertIn("GitHubWebhookExecutionRole", resources)
+        self.assertEqual(resources["GitHubWebhookExecutionRole"].get("Type"), "AWS::IAM::Role")
+
+        # Lambda function
+        self.assertIn("GitHubWebhookFunction", resources)
+        func = resources["GitHubWebhookFunction"]
+        self.assertEqual(func.get("Type"), "AWS::Lambda::Function")
+        self.assertEqual(func.get("Properties", {}).get("Handler"), "lambda_function.github_webhook_handler")
+        self.assertEqual(func.get("Properties", {}).get("Runtime"), "python3.12")
+
+        # API Gateway HTTP API, Integration, Route, Stage, and Permission
+        self.assertIn("GitHubHttpApi", resources)
+        self.assertEqual(resources["GitHubHttpApi"].get("Type"), "AWS::ApiGatewayV2::Api")
+
+        self.assertIn("GitHubApiIntegration", resources)
+        integration = resources["GitHubApiIntegration"]
+        self.assertEqual(integration.get("Type"), "AWS::ApiGatewayV2::Integration")
+        self.assertEqual(integration.get("Properties", {}).get("IntegrationType"), "AWS_PROXY")
+        self.assertEqual(integration.get("Properties", {}).get("PayloadFormatVersion"), "2.0")
+
+        self.assertIn("GitHubApiRoute", resources)
+        route = resources["GitHubApiRoute"]
+        self.assertEqual(route.get("Type"), "AWS::ApiGatewayV2::Route")
+        self.assertEqual(route.get("Properties", {}).get("RouteKey"), "POST /webhook/github")
+
+        self.assertIn("GitHubApiStage", resources)
+        stage = resources["GitHubApiStage"]
+        self.assertEqual(stage.get("Type"), "AWS::ApiGatewayV2::Stage")
+        self.assertEqual(stage.get("Properties", {}).get("StageName"), "$default")
+
+        self.assertIn("GitHubApiLambdaPermission", resources)
+        perm = resources["GitHubApiLambdaPermission"]
+        self.assertEqual(perm.get("Type"), "AWS::Lambda::Permission")
+        self.assertEqual(perm.get("Properties", {}).get("Principal"), "apigateway.amazonaws.com")
+        self.assertEqual(perm.get("Properties", {}).get("Action"), "lambda:InvokeFunction")
+
+        outputs = template.get("Outputs", {})
+        self.assertIn("WebhookUrl", outputs)
+        self.assertIn("GitHubLambdaArn", outputs)
+        self.assertIn("HttpApiId", outputs)
+
+    def test_codecommit_configuration_remains_intact(self):
+        """Verify existing CodeCommit Lambda configuration and policies were not altered or broken."""
+        with open(AWS_DIR / "lambda-function-config.json", "r", encoding="utf-8") as f:
+            cc_config = json.load(f)
+        self.assertEqual(
+            cc_config.get("Handler"),
+            "lambda_function.production_lambda_handler",
+            "CodeCommit config must retain production_lambda_handler",
+        )
+
+        with open(AWS_DIR / "lambda-policy.json", "r", encoding="utf-8") as f:
+            cc_policy = json.load(f)
+        actions = [a for s in cc_policy.get("Statement", []) for a in (s.get("Action") if isinstance(s.get("Action"), list) else [s.get("Action")])]
+        self.assertIn("codecommit:GetCommit", actions, "CodeCommit policy must retain codecommit:GetCommit")
+        self.assertIn("sqs:SendMessage", actions, "CodeCommit policy must retain sqs:SendMessage for DLQ")
 
 
 if __name__ == "__main__":
