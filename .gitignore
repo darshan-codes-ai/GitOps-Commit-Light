@@ -103,3 +103,9 @@ $RECYCLE.BIN/
 *.swo
 *~
 
+# --------------------------------------------------
+# Frontend Node.js Dependencies & Artifacts
+# --------------------------------------------------
+frontend/node_modules/
+frontend/dist/
+

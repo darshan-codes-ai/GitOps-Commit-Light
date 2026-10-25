@@ -18,7 +18,75 @@ The ESP32 receives the notification, flashes a green LED, and updates the OLED d
 
 **The goal:** Make cloud-based development activity visible through a small, affordable IoT device.
 
-> **Project status:** Planning and architecture definition. Implementation, integration, and testing will be completed in subsequent development phases.
+> **Project status:** Phase 1 Complete. An interactive local web dashboard and GitHub push event simulator is implemented and running offline with zero cloud costs. Backend Lambda logic is verified with 138 offline unit tests. Live AWS deployment and ESP32 physical integration are targeted for future phases.
+
+---
+
+## 🖥️ Phase 1: Local Web Dashboard & Commit Simulator
+
+Phase 1 provides a responsive, dark-themed local web dashboard and interactive commit simulator built with **React 18, Vite 5, and Tailwind CSS**. It demonstrates the end-to-end GitOps commit notification pipeline without requiring live cloud infrastructure or incurring AWS billing.
+
+```text
++-----------------------+     +-----------------------+     +-----------------------+     +-----------------------+
+|  GitHub Push Event    | --> |  API Gateway HTTP API | --> |  AWS Lambda Function  | --> |  AWS IoT Core MQTT    |
+|  (Simulator Form)     |     |  (POST /webhook)      |     |  (HMAC + Schema v1)   |     |  (gitops/commits)     |
++-----------------------+     +-----------------------+     +-----------------------+     +-----------------------+
+                                                                                                      |
+                                                                                                      v
+                                                                                          +-----------------------+
+                                                                                          |  ESP32 Commit Light   |
+                                                                                          |  (WS2812B NeoPixel)   |
+                                                                                          +-----------------------+
+```
+
+> **Simulation Banner Notice:** The interface prominently displays `LOCAL SIMULATION MODE — AWS NOT CONNECTED` to explicitly indicate that all events, state transitions, and MQTT messages execute deterministically inside the browser engine.
+
+### Key Dashboard Modules
+
+1. **Overview Dashboard:** Dynamic KPI metric cards (Total Events, Published, Ignored, Repositories), real-time repository distribution charts, quick simulation shortcut, and recent activity log.
+2. **GitHub Push Simulator:** Fully interactive form to construct custom GitHub push events or load quick presets (Valid Feature Push, Bugfix to Main, Feature Branch Ignore, Branch Deletion, Malformed Payload). Features stepped execution visualization and instant Schema v1 preview.
+3. **Commit Activity (Event History):** Filterable, searchable, and sortable table of all simulated events. Filter by repository, branch, or delivery status (`Published (QoS 0)`, `Ignored (Filtered)`, `Rejected (400)`).
+4. **AWS IoT Core Message Monitor:** Dedicated view displaying payloads dispatched to MQTT topic `gitops/commits` at QoS 0. Features JSON syntax highlighting and one-click clipboard copying.
+5. **Event Details Modal:** In-depth inspection modal showing full commit metadata, raw GitHub push webhook payload, Schema v1 payload, and 4-step pipeline execution breakdown.
+6. **AWS Integration Status:** Visual pipeline flow diagram documenting each architectural layer with explicit `NOT CONNECTED — PHASE 1 LOCAL SIMULATION` badges and Phase 1 vs Production comparison table.
+7. **Settings & Schema Reference:** Local storage maintenance (view event count, clear history with confirmation dialog, restore default seed events) and Schema v1 contract specification.
+
+### Running the Local Dashboard
+
+To launch the dashboard locally on Windows / macOS / Linux:
+
+```bash
+# 1. Navigate to the frontend directory
+cd frontend
+
+# 2. Install dependencies (if not already installed)
+npm install
+
+# 3. Start the local development server
+npm run dev
+```
+
+Open your browser at `http://localhost:5173` to explore the dashboard and simulate push events.
+
+To create an optimized production build and preview it:
+
+```bash
+# Build production bundle
+npm run build
+
+# Preview production build locally
+npm run preview
+```
+
+### Running Backend Unit Tests
+
+The backend Python Lambda handler, HMAC verification, AWS Secrets Manager fallback guards, and IAM policy definitions are verified offline:
+
+```bash
+python -m unittest discover tests -v
+```
+
+All 138 tests pass with zero cloud dependencies.
 
 ---
 
