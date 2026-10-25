@@ -16,7 +16,13 @@ import { KpiCard } from '../common/KpiCard';
 import { StatusBadge } from '../common/StatusBadge';
 import { EVENT_STATUS } from '../../types';
 
-export const OverviewSection = ({ events = [], onNavigate, onSelectEvent }) => {
+export const OverviewSection = ({ events = [], onNavigate, onSelectEvent, backendStatus = 'checking' }) => {
+  const getRepoName = (repo) => {
+    if (!repo) return 'Unknown';
+    if (typeof repo === 'string') return repo;
+    return repo.name || repo.fullName || 'Unknown';
+  };
+
   // Compute KPIs dynamically from actual local state
   const totalEvents = events.length;
   const successfulEvents = events.filter((e) => e.status === EVENT_STATUS.SUCCESS).length;
@@ -24,14 +30,14 @@ export const OverviewSection = ({ events = [], onNavigate, onSelectEvent }) => {
   const ignoredEvents = events.filter((e) => e.status === EVENT_STATUS.IGNORED).length;
 
   const uniqueRepos = Array.from(
-    new Set(events.map((e) => e.repository?.name || e.repository?.fullName || 'unknown'))
+    new Set(events.map((e) => getRepoName(e.repository)))
   ).length;
 
   const recentEvents = events.slice(0, 5);
 
   // Group events by repo for distribution
   const repoCounts = events.reduce((acc, curr) => {
-    const name = curr.repository?.name || 'Unknown';
+    const name = getRepoName(curr.repository);
     acc[name] = (acc[name] || 0) + 1;
     return acc;
   }, {});
@@ -137,28 +143,28 @@ export const OverviewSection = ({ events = [], onNavigate, onSelectEvent }) => {
             ) : (
               recentEvents.map((evt) => (
                 <div
-                  key={evt.eventId}
+                  key={evt.eventId || evt.id}
                   onClick={() => onSelectEvent(evt)}
                   className="group flex flex-col gap-2 py-3.5 transition-colors hover:bg-slate-800/40 rounded-lg px-2 cursor-pointer sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="space-y-1 min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-semibold text-slate-300 truncate">
-                        {evt.repository?.name || 'GitOps-Commit-Light'}
+                        {evt.repository?.name || (typeof evt.repository === 'string' ? evt.repository : 'GitOps-Commit-Light')}
                       </span>
                       <span className="inline-flex items-center gap-1 text-[11px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
                         <GitBranch className="w-3 h-3 text-emerald-400" />
                         {evt.branch}
                       </span>
                       <span className="font-mono text-[11px] text-slate-500">
-                        {evt.commit?.sha ? evt.commit.sha.substring(0, 7) : '0000000'}
+                        {(evt.commit?.sha || evt.commitSha || '0000000').substring(0, 7)}
                       </span>
                     </div>
                     <p className="text-xs text-slate-300 font-medium truncate group-hover:text-emerald-400 transition-colors">
-                      {evt.commit?.message || '(No commit message)'}
+                      {evt.commit?.message || evt.commitMessage || '(No commit message)'}
                     </p>
                     <div className="flex items-center gap-3 text-[11px] text-slate-500">
-                      <span>{evt.commit?.author?.name || 'Developer'}</span>
+                      <span>{evt.commit?.author?.name || evt.author || 'Developer'}</span>
                       <span>•</span>
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />

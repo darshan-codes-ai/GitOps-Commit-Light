@@ -85,6 +85,7 @@ export const storageService = {
 };
 
 export const getStoredEvents = () => storageService.getEvents();
+export const saveEvents = (events) => storageService.saveEvents(events);
 export const storeEvent = (event) => storageService.addEvent(event);
 export const clearStoredEvents = () => storageService.clearEvents();
 export const restoreSeedEvents = () => storageService.restoreSeedEvents();

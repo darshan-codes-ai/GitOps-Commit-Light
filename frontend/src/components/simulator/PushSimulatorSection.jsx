@@ -15,13 +15,15 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { simulatorService, generateCommitSha } from '../../services/simulatorService';
+import { apiClient } from '../../services/apiClient';
 import { JsonViewer } from '../common/JsonViewer';
 
 export const PushSimulatorSection = ({ 
   onEventCreated, 
   onEventSimulated, 
   onSelectEvent, 
-  onViewDetails 
+  onViewDetails,
+  backendStatus = 'checking',
 }) => {
   const triggerCreated = onEventSimulated || onEventCreated;
   const triggerSelect = onViewDetails || onSelectEvent;
@@ -133,13 +135,28 @@ export const PushSimulatorSection = ({
         setActiveStep(3);
         setTimeout(() => {
           setActiveStep(4);
-          setTimeout(() => {
+          setTimeout(async () => {
             setActiveStep(5);
 
-            const result = simulatorService.simulatePushEvent({
-              ...formData,
-              changedFiles,
-            });
+            let result = null;
+            try {
+              const apiResp = await apiClient.simulatePush({
+                ...formData,
+                changedFiles,
+              });
+              if (apiResp.success && apiResp.data?.event) {
+                result = apiResp.data.event;
+              }
+            } catch (err) {
+              console.warn('Backend API request failed, falling back to client simulator:', err);
+            }
+
+            if (!result) {
+              result = simulatorService.simulatePushEvent({
+                ...formData,
+                changedFiles,
+              });
+            }
 
             setIsProcessing(false);
             setLastResult(result);

@@ -14,21 +14,19 @@ import {
 import { clearStoredEvents, restoreSeedEvents, getStoredEvents } from '../../services/storageService';
 import { SIMULATION_BANNER_TEXT, MQTT_TOPIC } from '../../types';
 
-export default function AboutSection({ onResetEvents, eventCount }) {
+export default function AboutSection({ onResetEvents, eventCount, backendStatus = 'checking' }) {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [actionMessage, setActionMessage] = useState(null);
 
   const handleClearHistory = () => {
-    clearStoredEvents();
-    if (onResetEvents) onResetEvents();
+    if (onResetEvents) onResetEvents('clear');
     setShowClearConfirm(false);
     setActionMessage({ type: 'success', text: 'All event history cleared successfully.' });
     setTimeout(() => setActionMessage(null), 3000);
   };
 
   const handleRestoreSeeds = () => {
-    restoreSeedEvents();
-    if (onResetEvents) onResetEvents();
+    if (onResetEvents) onResetEvents('restore');
     setActionMessage({ type: 'success', text: 'Default seed events restored successfully.' });
     setTimeout(() => setActionMessage(null), 3000);
   };
@@ -103,6 +101,14 @@ export default function AboutSection({ onResetEvents, eventCount }) {
             <div className="flex items-center justify-between text-xs">
               <span className="text-slate-400">Active Topic</span>
               <span className="font-mono text-slate-300 text-[11px]">{MQTT_TOPIC}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
+              <span className="text-slate-400">Python Backend</span>
+              <span className={`font-mono text-[11px] font-semibold ${
+                backendStatus === 'connected' ? 'text-emerald-400' : 'text-amber-400'
+              }`}>
+                {backendStatus === 'connected' ? 'Online (FastAPI :8000)' : 'Offline (Client Fallback)'}
+              </span>
             </div>
           </div>
 

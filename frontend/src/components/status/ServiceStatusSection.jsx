@@ -15,7 +15,9 @@ import {
 } from 'lucide-react';
 import { SIMULATION_BANNER_TEXT } from '../../types';
 
-export default function ServiceStatusSection() {
+export default function ServiceStatusSection({ backendStatus = 'checking' }) {
+  const isBackendLive = backendStatus === 'connected';
+
   const pipelineNodes = [
     {
       id: 'github',
@@ -32,29 +34,33 @@ export default function ServiceStatusSection() {
       id: 'apigw',
       title: 'API Gateway HTTP API',
       role: 'Ingress Proxy',
-      status: 'NOT PROVISIONED',
-      statusType: 'offline',
-      desc: 'Routes incoming webhook POST requests to AWS Lambda with low latency and zero payload transformation.',
+      status: isBackendLive ? 'LOCAL FASTAPI PROXY' : 'NOT PROVISIONED',
+      statusType: isBackendLive ? 'tested' : 'offline',
+      desc: isBackendLive
+        ? 'Local FastAPI server routes incoming webhook requests directly to the Python Lambda handler with CORS support.'
+        : 'Routes incoming webhook POST requests to AWS Lambda with low latency and zero payload transformation.',
       icon: Server,
       awsResource: 'AWS::ApiGatewayV2::Api',
-      details: ['Route: POST /webhook ($default)', 'Payload format version: 2.0', 'CORS: Disabled (server-to-server)']
+      details: ['Route: POST /webhook/github', 'Payload format version: 2.0', 'CORS: Enabled for local development']
     },
     {
       id: 'lambda',
       title: 'AWS Lambda (Python 3.12)',
       role: 'Processing & Validation',
-      status: 'OFFLINE / TESTED',
-      statusType: 'tested',
-      desc: 'Validates HMAC signature, reads secret from Secrets Manager, filters main branch pushes, and constructs Schema v1 payload.',
+      status: isBackendLive ? 'RUNNING LOCALLY (:8000)' : 'OFFLINE / TESTED',
+      statusType: isBackendLive ? 'tested' : 'offline',
+      desc: isBackendLive
+        ? 'Actively executing backend/lambda/lambda_function.py github_webhook_handler with in-memory secret validation.'
+        : 'Validates HMAC signature, reads secret from Secrets Manager, filters main branch pushes, and constructs Schema v1 payload.',
       icon: Layers,
       awsResource: 'AWS::Lambda::Function',
-      details: ['Handler: lambda_function.github_webhook_handler', 'Secret ARN: AWS Secrets Manager', 'Test suite: 138 offline unit tests passing']
+      details: ['Handler: lambda_function.github_webhook_handler', 'Secret: Local Dev Secret / Secrets Manager', 'Test suite: 150 offline unit tests passing']
     },
     {
       id: 'iot',
       title: 'AWS IoT Core',
       role: 'Message Broker',
-      status: 'SIMULATED LOCAL QUEUE',
+      status: isBackendLive ? 'MOCK MQTT BROKER' : 'SIMULATED LOCAL QUEUE',
       statusType: 'simulated',
       desc: 'Distributes commit events to subscribed hardware clients over MQTT QoS 0 on topic gitops/commits.',
       icon: Radio,

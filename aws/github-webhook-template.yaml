@@ -61,6 +61,19 @@ Parameters:
     MinLength: 1
     MaxLength: 1024
 
+  ExecutionRoleArn:
+    Type: String
+    Default: ""
+    Description: >
+      Optional ARN of an existing IAM execution role (e.g. AWS Academy LabRole).
+      If provided, this role is used by the Lambda function and no new IAM role
+      is created. If omitted or empty, CloudFormation creates a dedicated
+      least-privilege IAM execution role.
+
+Conditions:
+
+  CreateExecutionRole: !Equals [!Ref ExecutionRoleArn, ""]
+
 Resources:
 
   # ---------------------------------------------------------
@@ -80,6 +93,7 @@ Resources:
 
   GitHubWebhookExecutionRole:
     Type: AWS::IAM::Role
+    Condition: CreateExecutionRole
     Properties:
       Description: >
         Execution role for the GitOps Commit Light GitHub webhook Lambda.
@@ -134,7 +148,7 @@ Resources:
         commit notifications to AWS IoT Core.
       Runtime: python3.12
       Handler: lambda_function.github_webhook_handler
-      Role: !GetAtt GitHubWebhookExecutionRole.Arn
+      Role: !If [CreateExecutionRole, !GetAtt GitHubWebhookExecutionRole.Arn, !Ref ExecutionRoleArn]
       Timeout: 10
       MemorySize: 128
 

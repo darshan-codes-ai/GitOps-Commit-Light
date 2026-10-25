@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
 import OverviewSection from './components/dashboard/OverviewSection';
@@ -8,19 +8,47 @@ import MqttMonitorSection from './components/mqtt/MqttMonitorSection';
 import ServiceStatusSection from './components/status/ServiceStatusSection';
 import AboutSection from './components/settings/AboutSection';
 import EventDetailModal from './components/details/EventDetailModal';
-import { getStoredEvents, storeEvent } from './services/storageService';
+import { getStoredEvents, storeEvent, saveEvents, clearStoredEvents, restoreSeedEvents } from './services/storageService';
+import apiClient from './services/apiClient';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('overview');
   const [events, setEvents] = useState([]);
   const [selectedEventModal, setSelectedEventModal] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'checking' | 'connected' | 'offline'
+  const [isSyncing, setIsSyncing] = useState(false);
 
-  // Load initial events from localStorage (or seeds)
-  useEffect(() => {
-    const loaded = getStoredEvents();
-    setEvents(loaded);
+  // Initialize and check backend connection
+  const loadData = useCallback(async () => {
+    setIsSyncing(true);
+    try {
+      const health = await apiClient.checkHealth();
+      if (health.success && health.data?.status === 'healthy') {
+        setBackendStatus('connected');
+        const eventsRes = await apiClient.getEvents();
+        if (eventsRes.success && Array.isArray(eventsRes.data)) {
+          setEvents(eventsRes.data);
+          saveEvents(eventsRes.data);
+          setIsSyncing(false);
+          return;
+        }
+      } else {
+        setBackendStatus('offline');
+      }
+    } catch {
+      setBackendStatus('offline');
+    }
+
+    // Fallback to local storage if backend is offline
+    const localEvents = getStoredEvents();
+    setEvents(localEvents);
+    setIsSyncing(false);
   }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // Handler when a new event is simulated
   const handleEventSimulated = (newEvent) => {
@@ -29,9 +57,32 @@ export default function App() {
   };
 
   // Handler when history is cleared or restored
-  const handleResetEvents = () => {
-    const updated = getStoredEvents();
-    setEvents(updated);
+  const handleResetEvents = async (action = 'restore') => {
+    setIsSyncing(true);
+    if (backendStatus === 'connected') {
+      try {
+        await apiClient.resetEvents(action);
+        const refreshed = await apiClient.getEvents();
+        if (refreshed.success && Array.isArray(refreshed.data)) {
+          setEvents(refreshed.data);
+          saveEvents(refreshed.data);
+          setIsSyncing(false);
+          return;
+        }
+      } catch (err) {
+        console.warn('Backend reset failed, using local storage fallback', err);
+      }
+    }
+
+    // Local fallback
+    if (action === 'clear') {
+      clearStoredEvents();
+      setEvents([]);
+    } else {
+      const restored = restoreSeedEvents();
+      setEvents(restored);
+    }
+    setIsSyncing(false);
   };
 
   return (
@@ -39,7 +90,10 @@ export default function App() {
       {/* Top Header */}
       <Header 
         mobileMenuOpen={mobileMenuOpen} 
-        setMobileMenuOpen={setMobileMenuOpen} 
+        setMobileMenuOpen={setMobileMenuOpen}
+        backendStatus={backendStatus}
+        onRefresh={loadData}
+        isSyncing={isSyncing}
       />
 
       {/* Main Layout Area */}
@@ -62,6 +116,7 @@ export default function App() {
               events={events}
               onNavigate={setActiveTab}
               onSelectEvent={setSelectedEventModal}
+              backendStatus={backendStatus}
             />
           )}
 
@@ -76,6 +131,7 @@ export default function App() {
             <PushSimulatorSection
               onEventSimulated={handleEventSimulated}
               onViewDetails={setSelectedEventModal}
+              backendStatus={backendStatus}
             />
           )}
 
@@ -87,13 +143,14 @@ export default function App() {
           )}
 
           {activeTab === 'status' && (
-            <ServiceStatusSection />
+            <ServiceStatusSection backendStatus={backendStatus} />
           )}
 
           {activeTab === 'about' && (
             <AboutSection
               onResetEvents={handleResetEvents}
               eventCount={events.length}
+              backendStatus={backendStatus}
             />
           )}
         </main>
@@ -109,11 +166,12 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-slate-950 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>GitOps Commit Light — Phase 1 Local Interactive Simulation</span>
-          <span className="font-mono text-slate-600">AWS Not Connected • Local Browser Engine</span>
+          <span>GitOps Commit Light — Local Interactive Simulation & Integration</span>
+          <span className="font-mono text-slate-600">
+            {backendStatus === 'connected' ? 'Connected to Local Python API Server (Port 8000)' : 'Client-Side Offline Simulation'}
+          </span>
         </div>
       </footer>
     </div>
   );
 }
-

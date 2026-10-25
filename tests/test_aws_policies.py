@@ -56,6 +56,11 @@ CFN_TAG_MAP = {
     "!GetAZs": "Fn::GetAZs",
     "!ImportValue": "Fn::ImportValue",
     "!Condition": "Condition",
+    "!Equals": "Fn::Equals",
+    "!If": "Fn::If",
+    "!Not": "Fn::Not",
+    "!And": "Fn::And",
+    "!Or": "Fn::Or",
 }
 
 
@@ -723,6 +728,17 @@ class TestGitHubAwsInfrastructure(unittest.TestCase):
         self.assertIn("MonitoredBranch", params)
         self.assertIn("LambdaCodeS3Bucket", params)
         self.assertIn("LambdaCodeS3Key", params)
+        self.assertIn("ExecutionRoleArn", params)
+        self.assertEqual(params["ExecutionRoleArn"].get("Type"), "String")
+        self.assertEqual(params["ExecutionRoleArn"].get("Default"), "")
+
+        # Conditions
+        conditions = template.get("Conditions", {})
+        self.assertIn("CreateExecutionRole", conditions)
+        self.assertEqual(
+            conditions["CreateExecutionRole"],
+            {"Fn::Equals": [{"Ref": "ExecutionRoleArn"}, ""]},
+        )
 
         resources = template.get("Resources", {})
         # Log group
@@ -732,6 +748,7 @@ class TestGitHubAwsInfrastructure(unittest.TestCase):
         # IAM role
         self.assertIn("GitHubWebhookExecutionRole", resources)
         self.assertEqual(resources["GitHubWebhookExecutionRole"].get("Type"), "AWS::IAM::Role")
+        self.assertEqual(resources["GitHubWebhookExecutionRole"].get("Condition"), "CreateExecutionRole")
 
         # Lambda function
         self.assertIn("GitHubWebhookFunction", resources)
@@ -739,6 +756,16 @@ class TestGitHubAwsInfrastructure(unittest.TestCase):
         self.assertEqual(func.get("Type"), "AWS::Lambda::Function")
         self.assertEqual(func.get("Properties", {}).get("Handler"), "lambda_function.github_webhook_handler")
         self.assertEqual(func.get("Properties", {}).get("Runtime"), "python3.12")
+        self.assertEqual(
+            func.get("Properties", {}).get("Role"),
+            {
+                "Fn::If": [
+                    "CreateExecutionRole",
+                    {"Fn::GetAtt": "GitHubWebhookExecutionRole.Arn"},
+                    {"Ref": "ExecutionRoleArn"},
+                ]
+            },
+        )
 
         # API Gateway HTTP API, Integration, Route, Stage, and Permission
         self.assertIn("GitHubHttpApi", resources)
@@ -770,6 +797,36 @@ class TestGitHubAwsInfrastructure(unittest.TestCase):
         self.assertIn("WebhookUrl", outputs)
         self.assertIn("GitHubLambdaArn", outputs)
         self.assertIn("HttpApiId", outputs)
+
+    def test_cloudformation_conditional_role_resolution(self):
+        """Verify the conditional execution role behavior for standard and AWS Academy/VocLabs deployments."""
+        cfn_path = AWS_DIR / "github-webhook-template.yaml"
+        with open(cfn_path, "r", encoding="utf-8") as f:
+            template = yaml.load(f, Loader=CfnYamlLoader)
+
+        condition_def = template.get("Conditions", {}).get("CreateExecutionRole")
+        self.assertIsNotNone(condition_def, "CreateExecutionRole condition must be defined")
+
+        # Case A: ExecutionRoleArn is default/empty -> CreateExecutionRole is True
+        default_role_param = template.get("Parameters", {}).get("ExecutionRoleArn", {}).get("Default")
+        self.assertEqual(default_role_param, "")
+        is_empty_default = (default_role_param == "")
+        self.assertTrue(is_empty_default, "Empty ExecutionRoleArn must activate CreateExecutionRole")
+
+        # Case B: ExecutionRoleArn is specified (e.g. LabRole) -> CreateExecutionRole is False
+        custom_role_arn = "arn:aws:iam::123456789012:role/LabRole"
+        is_empty_custom = (custom_role_arn == "")
+        self.assertFalse(is_empty_custom, "Non-empty ExecutionRoleArn must skip CreateExecutionRole")
+
+        # Verify Lambda Role !If expression structure
+        func = template.get("Resources", {}).get("GitHubWebhookFunction", {})
+        role_prop = func.get("Properties", {}).get("Role", {})
+        if_expr = role_prop.get("Fn::If")
+        self.assertIsInstance(if_expr, list)
+        self.assertEqual(len(if_expr), 3)
+        self.assertEqual(if_expr[0], "CreateExecutionRole")
+        self.assertEqual(if_expr[1], {"Fn::GetAtt": "GitHubWebhookExecutionRole.Arn"})
+        self.assertEqual(if_expr[2], {"Ref": "ExecutionRoleArn"})
 
     def test_codecommit_configuration_remains_intact(self):
         """Verify existing CodeCommit Lambda configuration and policies were not altered or broken."""

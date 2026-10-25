@@ -5,12 +5,12 @@ import StatusBadge from '../common/StatusBadge';
 import { MQTT_TOPIC, MQTT_QOS } from '../../types';
 
 export default function MqttMonitorSection({ events, onSelectEvent }) {
-  const publishedEvents = events.filter((e) => e.mqttPublished && e.mqttPayload);
+  const publishedEvents = events.filter((e) => (e.mqttPublished || e.status === 'success') && e.mqttPayload);
   const [selectedEventId, setSelectedEventId] = useState(
-    publishedEvents.length > 0 ? publishedEvents[0].id : null
+    publishedEvents.length > 0 ? (publishedEvents[0].id || publishedEvents[0].eventId) : null
   );
 
-  const activeEvent = publishedEvents.find((e) => e.id === selectedEventId) || publishedEvents[0];
+  const activeEvent = publishedEvents.find((e) => (e.id || e.eventId) === selectedEventId) || publishedEvents[0];
 
   return (
     <div className="space-y-6">
@@ -74,11 +74,16 @@ export default function MqttMonitorSection({ events, onSelectEvent }) {
 
             <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
               {publishedEvents.map((ev) => {
-                const isSelected = activeEvent?.id === ev.id;
+                const evId = ev.id || ev.eventId;
+                const isSelected = (activeEvent?.id || activeEvent?.eventId) === evId;
+                const repoStr = typeof ev.repository === 'string' ? ev.repository : (ev.repository?.fullName || ev.repository?.name || 'GitOps-Commit-Light');
+                const shaStr = (ev.commitSha || ev.commit?.sha || '0000000').substring(0, 7);
+                const msgStr = ev.commitMessage || ev.commit?.message || '(No commit message)';
+
                 return (
                   <button
-                    key={ev.id}
-                    onClick={() => setSelectedEventId(ev.id)}
+                    key={evId}
+                    onClick={() => setSelectedEventId(evId)}
                     className={`w-full text-left p-3 rounded-lg border transition-all ${
                       isSelected
                         ? 'bg-indigo-950/40 border-indigo-500/60 shadow-md ring-1 ring-indigo-500/20'
@@ -87,17 +92,17 @@ export default function MqttMonitorSection({ events, onSelectEvent }) {
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span className="font-mono text-xs font-semibold text-indigo-300 truncate">
-                        {ev.commitSha.substring(0, 7)}
+                        {shaStr}
                       </span>
                       <span className="text-[10px] text-slate-400 font-mono">
                         {new Date(ev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </span>
                     </div>
                     <p className="text-xs text-slate-300 line-clamp-1 font-medium mb-2">
-                      {ev.commitMessage}
+                      {msgStr}
                     </p>
                     <div className="flex items-center justify-between text-[11px] text-slate-400">
-                      <span>{ev.repository}</span>
+                      <span>{repoStr}</span>
                       <span className="font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded text-[10px]">
                         QoS 0
                       </span>
@@ -118,11 +123,11 @@ export default function MqttMonitorSection({ events, onSelectEvent }) {
                     <div className="flex items-center gap-2 mb-1">
                       <StatusBadge status={activeEvent.status} />
                       <span className="text-xs text-slate-400 font-mono">
-                        Event ID: {activeEvent.deliveryId || activeEvent.id}
+                        Event ID: {activeEvent.deliveryId || activeEvent.eventId || activeEvent.id}
                       </span>
                     </div>
                     <h3 className="text-base font-semibold text-white">
-                      {activeEvent.commitMessage}
+                      {activeEvent.commitMessage || activeEvent.commit?.message || '(No commit message)'}
                     </h3>
                   </div>
 
@@ -141,7 +146,7 @@ export default function MqttMonitorSection({ events, onSelectEvent }) {
                   <div>
                     <span className="text-[11px] text-slate-500 uppercase tracking-wider block">Repository</span>
                     <span className="text-xs font-mono font-medium text-slate-300 truncate block">
-                      {activeEvent.repository}
+                      {typeof activeEvent.repository === 'string' ? activeEvent.repository : (activeEvent.repository?.name || activeEvent.repository?.fullName || 'GitOps-Commit-Light')}
                     </span>
                   </div>
                   <div>
@@ -153,7 +158,7 @@ export default function MqttMonitorSection({ events, onSelectEvent }) {
                   <div>
                     <span className="text-[11px] text-slate-500 uppercase tracking-wider block">Author</span>
                     <span className="text-xs font-medium text-slate-300 truncate block">
-                      {activeEvent.author}
+                      {activeEvent.author || activeEvent.commit?.author?.name || 'Developer'}
                     </span>
                   </div>
                   <div>

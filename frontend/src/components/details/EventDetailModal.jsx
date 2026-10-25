@@ -20,12 +20,17 @@ export default function EventDetailModal({ event, isOpen, onClose }) {
   if (!event) return null;
 
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'mqtt' | 'raw' | 'timeline'
+  const shaStr = event.commitSha || event.commit?.sha || '0000000000000000000000000000000000000000';
+  const msgStr = event.commitMessage || event.commit?.message || '(No commit message)';
+  const repoStr = typeof event.repository === 'string' ? event.repository : (event.repository?.fullName || event.repository?.name || 'GitOps-Commit-Light');
+  const authorStr = event.author || event.commit?.author?.name || 'Developer';
+  const changedFilesList = event.changedFiles || event.commit?.changedFiles || [];
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`Event Details: ${event.commitSha.substring(0, 7)}`}
+      title={`Event Details: ${shaStr.substring(0, 7)}`}
     >
       <div className="space-y-5">
         {/* Top Header Card */}
@@ -34,14 +39,14 @@ export default function EventDetailModal({ event, isOpen, onClose }) {
             <div className="flex items-center gap-2 mb-1">
               <StatusBadge status={event.status} />
               <span className="text-xs font-mono text-slate-400">
-                Delivery ID: {event.deliveryId || event.id}
+                Delivery ID: {event.deliveryId || event.eventId || event.id}
               </span>
             </div>
             <h3 className="text-base font-semibold text-white">
-              {event.commitMessage}
+              {msgStr}
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Repository: <span className="font-mono text-slate-300">{event.repository}</span> • Branch: <span className="font-mono text-indigo-400">{event.branch}</span>
+              Repository: <span className="font-mono text-slate-300">{repoStr}</span> • Branch: <span className="font-mono text-indigo-400">{event.branch}</span>
             </p>
           </div>
 
@@ -104,19 +109,19 @@ export default function EventDetailModal({ event, isOpen, onClose }) {
               <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
                 <span className="text-[11px] text-slate-500 uppercase tracking-wider block">Author</span>
                 <span className="text-xs font-medium text-slate-200 truncate block mt-0.5">
-                  {event.author}
+                  {authorStr}
                 </span>
               </div>
               <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
                 <span className="text-[11px] text-slate-500 uppercase tracking-wider block">Full Commit SHA</span>
-                <span className="text-xs font-mono text-indigo-400 truncate block mt-0.5" title={event.commitSha}>
-                  {event.commitSha}
+                <span className="text-xs font-mono text-indigo-400 truncate block mt-0.5" title={shaStr}>
+                  {shaStr}
                 </span>
               </div>
               <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
                 <span className="text-[11px] text-slate-500 uppercase tracking-wider block">Changed Files</span>
                 <span className="text-xs font-medium text-slate-200 block mt-0.5">
-                  {Array.isArray(event.changedFiles) ? event.changedFiles.length : 0} files
+                  {Array.isArray(changedFilesList) ? changedFilesList.length : 0} files
                 </span>
               </div>
               <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
@@ -130,13 +135,13 @@ export default function EventDetailModal({ event, isOpen, onClose }) {
             </div>
 
             {/* Changed Files List */}
-            {event.changedFiles && event.changedFiles.length > 0 && (
+            {changedFilesList && changedFilesList.length > 0 && (
               <div className="p-4 bg-slate-950/60 rounded-lg border border-slate-800">
                 <span className="text-xs font-semibold text-slate-300 block mb-2">
                   Modified File Paths:
                 </span>
                 <ul className="space-y-1 font-mono text-xs text-slate-400 max-h-32 overflow-y-auto custom-scrollbar">
-                  {event.changedFiles.map((file, idx) => (
+                  {changedFilesList.map((file, idx) => (
                     <li key={idx} className="flex items-center gap-2">
                       <span className="text-indigo-400">•</span>
                       <span>{file}</span>

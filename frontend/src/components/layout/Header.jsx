@@ -1,9 +1,17 @@
 import React from 'react';
-import { GitCommit, ShieldAlert, Cpu, Menu } from 'lucide-react';
+import { GitCommit, ShieldAlert, Cpu, Menu, RefreshCw, Server, Wifi } from 'lucide-react';
 import { SIMULATION_BANNER } from '../../types';
 
-export const Header = ({ onToggleSidebar, mobileMenuOpen, setMobileMenuOpen }) => {
+export const Header = ({
+  onToggleSidebar,
+  mobileMenuOpen,
+  setMobileMenuOpen,
+  backendStatus = 'checking',
+  onRefresh,
+  isSyncing = false
+}) => {
   const handleToggle = onToggleSidebar || (() => setMobileMenuOpen && setMobileMenuOpen(!mobileMenuOpen));
+
   return (
     <header className="sticky top-0 z-40 border-b border-slate-800 bg-slate-950/90 backdrop-blur">
       {/* Simulation Banner required by specification */}
@@ -35,7 +43,7 @@ export const Header = ({ onToggleSidebar, mobileMenuOpen, setMobileMenuOpen }) =
                   GitOps Commit Light
                 </h1>
                 <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-500/20">
-                  PHASE 1
+                  LOCAL DEV
                 </span>
               </div>
               <p className="hidden sm:block text-xs text-slate-400">
@@ -45,21 +53,43 @@ export const Header = ({ onToggleSidebar, mobileMenuOpen, setMobileMenuOpen }) =
           </div>
         </div>
 
-        {/* Right Status Indicator */}
-        <div className="flex items-center gap-3">
-          <div className="hidden md:flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300">
+        {/* Right Status Indicators */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Refresh Button */}
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              disabled={isSyncing}
+              title="Refresh connection and events from backend"
+              className="p-1.5 rounded-lg border border-slate-800 bg-slate-900/60 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-indigo-400' : ''}`} />
+            </button>
+          )}
+
+          {/* Backend Connection Indicator */}
+          <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1.5 text-xs font-medium">
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              {backendStatus === 'connected' ? (
+                <>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </>
+              ) : (
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+              )}
             </span>
-            <span className="text-slate-400">Target Topic:</span>
-            <code className="font-mono text-emerald-400">gitops/commits</code>
+            <span className="hidden md:inline text-slate-400">Backend:</span>
+            <span className={backendStatus === 'connected' ? 'text-emerald-400 font-mono text-[11px]' : 'text-amber-400 font-mono text-[11px]'}>
+              {backendStatus === 'connected' ? 'Connected (:8000)' : 'Client Sim'}
+            </span>
           </div>
 
-          <div className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1.5 text-xs font-medium text-slate-300">
-            <Cpu className="w-3.5 h-3.5 text-amber-400" />
-            <span className="hidden sm:inline">Engine:</span>
-            <span className="text-amber-400">Local Mock</span>
+          {/* Target MQTT Topic */}
+          <div className="hidden lg:flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-xs text-slate-300">
+            <Wifi className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="text-slate-400">Topic:</span>
+            <code className="font-mono text-indigo-300">gitops/commits</code>
           </div>
         </div>
       </div>
