@@ -2,7 +2,7 @@
 
 ### Turn Every Git Commit into a Physical Signal!
 
-An IoT-powered DevOps monitoring system that connects **AWS CodeCommit, AWS Lambda, AWS IoT Core, and an ESP32** to provide real-time physical notifications whenever a new commit is made to a monitored Git repository.
+An IoT-powered DevOps monitoring system that connects **GitHub Webhooks, Amazon API Gateway, AWS Lambda, AWS IoT Core, and an ESP32** to provide real-time physical notifications whenever a new commit is made to a monitored Git repository. (Dual support is also retained for AWS CodeCommit via Amazon EventBridge).
 
 A green LED flashes once for every successfully processed new commit notification, while an OLED display shows the latest commit message.
 
@@ -18,7 +18,7 @@ The ESP32 receives the notification, flashes a green LED, and updates the OLED d
 
 **The goal:** Make cloud-based development activity visible through a small, affordable IoT device.
 
-> **Project status:** Phase 1 Complete. An interactive local web dashboard and GitHub push event simulator is implemented and running offline with zero cloud costs. Backend Lambda logic is verified with 138 offline unit tests. Live AWS deployment and ESP32 physical integration are targeted for future phases.
+> **Project status:** Phase 1 Complete. An interactive local web dashboard and GitHub push event simulator is implemented and running offline with zero cloud costs. Backend Lambda logic is verified with 150 offline unit tests. ESP32 PlatformIO firmware is implemented in `firmware/esp32/`. Live AWS deployment and physical bench testing are ready for staging.
 
 ---
 
@@ -86,21 +86,22 @@ The backend Python Lambda handler, HMAC verification, AWS Secrets Manager fallba
 python -m unittest discover tests -v
 ```
 
-All 138 tests pass with zero cloud dependencies.
+All 150 tests pass with zero cloud dependencies.
 
 ---
 
 ## 🎯 Project Objectives
 
-* 🔔 Detect new commits in an AWS CodeCommit repository.
-* ⚡ Automatically process repository events using AWS Lambda.
-* ☁️ Route repository events through Amazon EventBridge.
-* 📡 Deliver commit notifications using AWS IoT Core and MQTT.
-* 🟢 Flash a green LED once for each successfully processed notification.
-* 🖥️ Display the latest commit message on an OLED screen.
-* 🔐 Implement secure device authentication and least-privilege permissions.
+* 🔔 Detect new commits in a monitored Git repository (GitHub Push Webhook or AWS CodeCommit).
+* ⚡ Automatically process repository events and verify HMAC signatures using AWS Lambda.
+* ☁️ Ingest webhooks via Amazon API Gateway HTTP API v2 (or EventBridge for CodeCommit).
+* 📡 Deliver standardized Schema v1 commit notifications using AWS IoT Core and MQTT.
+* 💡 Process notifications on a physical ESP32 microcontroller with non-blocking Wi-Fi and mTLS.
+* 🟢 Flash a green LED once for each successfully processed notification (optional hardware hook).
+* 🖥️ Display the latest commit message on an OLED screen or Serial Monitor.
+* 🔐 Implement secure device authentication (X.509 certificates) and least-privilege permissions.
 * 🔄 Handle duplicate notifications and network reconnections.
-* 🧪 Test individual components and the complete end-to-end workflow.
+* 🧪 Test individual components and the complete end-to-end workflow (150 passing unit tests).
 
 ---
 
@@ -109,60 +110,70 @@ All 138 tests pass with zero cloud dependencies.
 ```text
                   DEVELOPER
                       |
-                      | Git Push
+                      | Git Push (refs/heads/main)
                       v
              +-------------------+
-             |   AWS CodeCommit  |
-             |                   |
-             |  Git Repository   |
+             | GitHub Repository |
              +---------+---------+
                        |
-                       | Repository Event
+                       | HTTPS POST /webhook/github (HMAC-SHA256)
                        v
              +-------------------+
-             | Amazon EventBridge|
-             |                   |
-             |    Event Rule     |
+             | Amazon API Gateway|  (HTTP API v2, payload format 2.0)
              +---------+---------+
                        |
                        | Invoke
                        v
              +-------------------+
-             |    AWS Lambda     |
-             |                   |
-             | Validate Event    |
-             | Retrieve Commit   |
-             | Build JSON Message|
+             |    AWS Lambda     |  (github_webhook_handler in Python 3.12)
+             |                   |  - HMAC Signature Verification
+             |                   |  - Branch Filter ('main')
+             |                   |  - Secrets Manager Warm Cache
+             |                   |  - Schema v1 JSON Construction
              +---------+---------+
                        |
-                       | Publish MQTT Message
+                       | Publish MQTT Message (QoS 0)
                        v
              +-------------------+
-             |    AWS IoT Core   |
-             |                   |
-             | MQTT Topic        |
-             | gitops/commits    |
+             |    AWS IoT Core   |  (Broker endpoint: Data-ATS)
+             |                   |  MQTT Topic: gitops/commits
              +---------+---------+
                        |
-                       | MQTT over TLS
-                       | Wi-Fi
+                       | MQTT over TLS (Port 8883, X.509 mTLS)
+                       | 2.4 GHz Wi-Fi
                        v
              +-------------------+
-             |       ESP32       |
-             |                   |
-             | MQTT Subscriber   |
-             | JSON Processing   |
+             |       ESP32       |  (firmware/esp32/ - ESP32 DevKit V1)
+             |                   |  - WiFiManager (Non-blocking reconnection)
+             |                   |  - MqttManager (PubSubClient, 2048B buffer)
+             |                   |  - CommitHandler (ArduinoJson Schema v1)
              +---------+---------+
                        |
                  +-----+-----+
                  |           |
                  v           v
           +------------+ +------------+
-          | Green LED  | | OLED       |
-          |            | | Display    |
-          | Flash Once | | Commit Text|
+          | Serial     | | Optional   |
+          | Monitor    | | LED / OLED |
+          | Banner     | | Peripheral |
           +------------+ +------------+
 ```
+
+*(Note: Dual-path compatibility is retained for AWS CodeCommit repositories routed through Amazon EventBridge).*
+
+---
+
+## 🔌 ESP32 Hardware Firmware (PlatformIO)
+
+The production-oriented ESP32 firmware is located in `firmware/esp32/`:
+
+* **Board:** ESP32 DevKit V1 (`esp32dev`, ESP32-WROOM-32).
+* **Framework:** Arduino framework via PlatformIO.
+* **Security:** AWS IoT Core mutual TLS with Amazon Root CA 1, device certificate, and private key.
+* **Buffer Safety:** 2048-byte MQTT buffer preventing silent packet truncation.
+* **Contract:** Strict Schema v1 JSON parser with robust error handling for missing fields and malformed payloads.
+
+For full setup, AWS IoT Thing creation, certificate configuration, and compilation instructions, see the [ESP32 Firmware Documentation](firmware/esp32/README.md).
 
 ### Architecture Components
 

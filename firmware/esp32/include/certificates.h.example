@@ -1,0 +1,64 @@
+#pragma once
+#include <pgmspace.h>
+
+/**
+ * ============================================================================
+ * GitOps Commit Light — ESP32 X.509 Certificates Template
+ * ============================================================================
+ *
+ * INSTRUCTIONS:
+ * 1. Copy this file to 'certificates.h' in the same directory:
+ *      cp include/certificates.h.example include/certificates.h
+ * 2. Paste your Amazon Root CA 1, ESP32 device certificate, and ESP32 private key.
+ * 3. Never commit 'certificates.h' to Git. It is excluded by .gitignore.
+ *
+ * AWS IoT Core requires mutual TLS (mTLS) on port 8883.
+ * Storing keys in flash via PROGMEM conserves ESP32 SRAM.
+ */
+
+// ============================================================================
+// 1. Amazon Root CA 1 (Public Root Certificate)
+// Source: https://www.amazontrust.com/repository/AmazonRootCA1.pem
+// ============================================================================
+static const char AWS_CERT_CA[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zfQY5hcnx6RGq2CJJPvGFA34HcgDuuqIFeDZTXOxUSD3qEG9WNT8C8a
+U388w80FpquhuvphBQvZgzEZFeOi+47DXisxgWbSZs3jbmpGY972NnsnHDLTY62f
+RulingURPU68UPbq50U03Sp0+/NEWhjqauDNB3l38b1xflUcHKDytGGCud0U9nDL
+KE9l9embWwyiodfUAFfwXtRBo+nObBxPzzS70f03u8mUkDCey/jUgZZrm97IZWhU
+dWQtxRVwyFECAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK50gs575QGg35QqoLwcFabwhLsQ
+oZgc/uzOTsROBopmLKotmnVUR83qwlIkTXGiqjCS2BI7bRxBYcfNlUbismNKNmXb
+Ky4uCQDZ9P35636xunguvFCxkrGWGHZJ7nOhHKoBlTLvDaWhZzvnhu9000F7LYQo
+nWbGc2tkvn5Bu4VOWUEPMTzsPo959ueOUpowNGePjagnN0zLnIJ2x94NuHxRRxl6
+39ceGeHKqBKQAzaN7s1CLpdQu882rymrtMWBoZqSvUsBQfCnqQfqk3SyzUL4W+gD
+FFIpJYTvc531lNJboW5iS2RLoEfi
+-----END CERTIFICATE-----
+)EOF";
+
+// ============================================================================
+// 2. ESP32 Device Certificate (xxxx-certificate.pem.crt)
+// Replace with the certificate issued by AWS IoT Core for this device.
+// ============================================================================
+static const char AWS_CERT_CRT[] PROGMEM = R"KEY(
+-----BEGIN CERTIFICATE-----
+...REPLACE WITH YOUR ESP32 DEVICE CERTIFICATE (xxxx-certificate.pem.crt)...
+-----END CERTIFICATE-----
+)KEY";
+
+// ============================================================================
+// 3. ESP32 Device Private Key (xxxx-private.pem.key)
+// Replace with the private key corresponding to the device certificate.
+// ============================================================================
+static const char AWS_CERT_PRIVATE[] PROGMEM = R"KEY(
+-----BEGIN RSA PRIVATE KEY-----
+...REPLACE WITH YOUR ESP32 DEVICE PRIVATE KEY (xxxx-private.pem.key)...
+-----END RSA PRIVATE KEY-----
+)KEY";
