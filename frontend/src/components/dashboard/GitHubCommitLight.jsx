@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Activity, ExternalLink, GitCommit, RefreshCw } from 'lucide-react';
 
 const REPOSITORY = 'darshan-codes-ai/GitOps-Commit-Light';
+const MONITORED_BRANCH = 'feature/esp32-platformio-integration';
 const POLL_INTERVAL_MS = 30000;
 const LIGHT_DURATION_MS = 10000;
 
@@ -25,7 +26,7 @@ export default function GitHubCommitLight() {
 
       try {
         const response = await fetch(
-          `https://api.github.com/repos/${REPOSITORY}/commits?per_page=1`,
+          `https://api.github.com/repos/${REPOSITORY}/commits?sha=${encodeURIComponent(MONITORED_BRANCH)}&per_page=1`,
           {
             headers: { Accept: 'application/vnd.github+json' },
             signal: controller.signal,
@@ -108,7 +109,7 @@ export default function GitHubCommitLight() {
           </a>
           <div className="mt-2 flex items-center gap-1.5 text-xs text-slate-500 sm:justify-end">
             <RefreshCw className="h-3 w-3" />
-            Checks every 30 seconds
+            Branch: feature/esp32-platformio-integration · checks every 30 seconds
           </div>
         </div>
       </div>
