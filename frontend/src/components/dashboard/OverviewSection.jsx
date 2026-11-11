@@ -15,6 +15,7 @@ import {
 import { KpiCard } from '../common/KpiCard';
 import { StatusBadge } from '../common/StatusBadge';
 import { EVENT_STATUS } from '../../types';
+import GitHubCommitLight from './GitHubCommitLight';
 
 export const OverviewSection = ({ events = [], onNavigate, onSelectEvent, backendStatus = 'checking' }) => {
   const getRepoName = (repo) => {
@@ -83,6 +84,9 @@ export const OverviewSection = ({ events = [], onNavigate, onSelectEvent, backen
         {/* Ambient background glow */}
         <div className="absolute -top-24 -right-24 h-64 w-64 rounded-full bg-emerald-500/5 blur-3xl pointer-events-none" />
       </div>
+
+      {/* Live GitHub commit indicator */}
+      <GitHubCommitLight />
 
       {/* KPI Cards Grid */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
