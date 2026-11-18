@@ -1,0 +1,1 @@
+﻿GitOps AWS MQTT test - 11/18/2026 22:50:06
