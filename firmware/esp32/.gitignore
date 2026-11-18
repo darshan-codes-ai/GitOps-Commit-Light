@@ -1,0 +1,27 @@
+# ESP32 Firmware - Local Configuration & Private Secrets
+include/config.h
+include/certificates.h
+src/config.h
+src/certificates.h
+config.h
+certificates.h
+
+# TLS Keys and Certificates
+*.pem
+*.crt
+*.key
+*.der
+root-CA.crt
+certificate.pem.crt
+private.pem.key
+
+# PlatformIO Build Artifacts & IDE Metadata
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+*.hex
+*.bin
+*.elf
+*.map

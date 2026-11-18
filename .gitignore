@@ -11,6 +11,8 @@ secrets.json
 config.h
 private_config.h
 wifi_credentials.h
+certificates.h
+private_certificates.h
 
 # --------------------------------------------------
 # AWS Credentials & Local Config

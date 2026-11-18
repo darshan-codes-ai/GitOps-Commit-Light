@@ -1,0 +1,54 @@
+#pragma once
+
+/**
+ * ============================================================================
+ * GitOps Commit Light — ESP32 Configuration Template
+ * ============================================================================
+ *
+ * INSTRUCTIONS:
+ * 1. Copy this file to 'config.h' in the same directory:
+ *      cp include/config.h.example include/config.h
+ * 2. Replace the placeholder values with your actual network credentials
+ *    and AWS IoT Core parameters.
+ * 3. Never commit 'config.h' to source control. It is ignored by .gitignore.
+ */
+
+// ============================================================================
+// Wi-Fi Configuration
+// ============================================================================
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+// Connection timeouts and retry intervals
+#define WIFI_CONNECT_TIMEOUT_MS 20000   // 20 seconds maximum per connection attempt
+#define WIFI_RETRY_INTERVAL_MS  5000    // Wait 5 seconds between non-blocking retry cycles
+
+// ============================================================================
+// AWS IoT Core Configuration
+// ============================================================================
+// AWS IoT Data-ATS Endpoint (obtained from: aws iot describe-endpoint --endpoint-type iot:Data-ATS)
+#define AWS_IOT_ENDPOINT "a1jg5cptbrzoqy-ats.iot.us-east-1.amazonaws.com"
+#define AWS_IOT_PORT 8883
+
+// Dedicated Client ID (must match the resource in aws/iot-policy.json)
+#define AWS_IOT_CLIENT_ID "esp32-gitops-commit-light"
+
+// Target MQTT Topic (Must match Schema v1 contract from Lambda backend)
+#define AWS_IOT_TOPIC "gitops/commits"
+
+// MQTT Buffer Size (must match -D MQTT_MAX_PACKET_SIZE=2048 in platformio.ini)
+#define MQTT_PACKET_BUFFER_SIZE 2048
+
+// MQTT Keep-Alive and Reconnect Interval
+#define MQTT_KEEPALIVE_SECONDS 60
+#define MQTT_RETRY_INTERVAL_MS 5000     // Non-blocking retry delay between failed broker connects
+
+// ============================================================================
+// Diagnostic & Hardware Options
+// ============================================================================
+#define SERIAL_BAUD_RATE 115200
+
+// Optional hardware indicator pins (future expansion)
+// Set to -1 if no physical hardware is connected
+#define PIN_STATUS_LED -1
+#define PIN_COMMIT_LED -1
